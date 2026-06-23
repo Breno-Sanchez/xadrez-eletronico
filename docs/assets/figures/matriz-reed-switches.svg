@@ -1,0 +1,144 @@
+<svg width="1600" height="980" viewBox="0 0 1600 980" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 800 44px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 600 23px Arial, sans-serif; fill: #475569; }
+      .panel-title { font: 800 28px Arial, sans-serif; fill: #0f172a; }
+      .label { font: 800 23px Arial, sans-serif; fill: #0f172a; }
+      .text { font: 600 19px Arial, sans-serif; fill: #334155; }
+      .small { font: 600 16px Arial, sans-serif; fill: #475569; }
+      .coord { font: 800 22px Arial, sans-serif; fill: #0f172a; }
+      .panel { fill: #f8fafc; stroke: #334155; stroke-width: 3; rx: 24; }
+      .cell-a { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.8; }
+      .cell-b { fill: #f1f5f9; stroke: #cbd5e1; stroke-width: 1.8; }
+      .col-highlight { fill: #bfdbfe; opacity: 0.80; }
+      .row-highlight { fill: #fed7aa; opacity: 0.82; }
+      .active { fill: #bbf7d0; stroke: #15803d; stroke-width: 6; }
+      .board-border { fill: none; stroke: #0f172a; stroke-width: 5; }
+      .bus-col { stroke: #2563eb; stroke-width: 7; fill: none; stroke-linecap: round; }
+      .bus-row { stroke: #ea580c; stroke-width: 7; fill: none; stroke-linecap: round; }
+      .green { fill: #dcfce7; stroke: #15803d; stroke-width: 3; rx: 18; }
+      .blue { fill: #dbeafe; stroke: #2563eb; stroke-width: 3; rx: 18; }
+      .orange { fill: #ffedd5; stroke: #ea580c; stroke-width: 3; rx: 18; }
+      .purple { fill: #f3e8ff; stroke: #7e22ce; stroke-width: 3; rx: 18; }
+      .yellow { fill: #fef9c3; stroke: #a16207; stroke-width: 3; rx: 18; }
+      .wire { stroke: #0f172a; stroke-width: 5; fill: none; stroke-linecap: round; }
+      .reed { stroke: #15803d; stroke-width: 5; fill: none; stroke-linecap: round; }
+      .diode { stroke: #7e22ce; stroke-width: 4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow { stroke: #0f172a; stroke-width: 5; fill: none; marker-end: url(#arrow); stroke-linecap: round; }
+      .arrow-blue { stroke: #2563eb; stroke-width: 5; fill: none; marker-end: url(#arrow-blue); stroke-linecap: round; }
+      .arrow-orange { stroke: #ea580c; stroke-width: 5; fill: none; marker-end: url(#arrow-orange); stroke-linecap: round; }
+    </style>
+
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="12" refY="5" orient="auto">
+      <polygon points="0 0, 13 5, 0 10" fill="#0f172a"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="14" markerHeight="14" refX="12" refY="5" orient="auto">
+      <polygon points="0 0, 13 5, 0 10" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="14" markerHeight="14" refX="12" refY="5" orient="auto">
+      <polygon points="0 0, 13 5, 0 10" fill="#ea580c"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="980" class="bg"/>
+
+  <text x="800" y="58" text-anchor="middle" class="title">Matriz de reed switches do tabuleiro eletrônico</text>
+  <text x="800" y="96" text-anchor="middle" class="subtitle">A posição da peça é obtida pela interseção entre uma coluna ativada e uma linha lida pelo ESP32</text>
+
+  <!-- LEFT PANEL -->
+  <rect x="55" y="130" width="930" height="800" class="panel"/>
+  <text x="520" y="180" text-anchor="middle" class="panel-title">Matriz 8×8: linhas, colunas e casa acionada</text>
+
+  <!-- Board x=150 y=240 cell=78 size=624 -->
+  <rect x="384" y="240" width="78" height="624" class="col-highlight"/>
+  <rect x="150" y="474" width="624" height="78" class="row-highlight"/>
+
+  <!-- cells generated -->
+  <g>
+    <rect x="150" y="240" width="78" height="78" class="cell-a"/><rect x="228" y="240" width="78" height="78" class="cell-b"/><rect x="306" y="240" width="78" height="78" class="cell-a"/><rect x="384" y="240" width="78" height="78" class="cell-b"/><rect x="462" y="240" width="78" height="78" class="cell-a"/><rect x="540" y="240" width="78" height="78" class="cell-b"/><rect x="618" y="240" width="78" height="78" class="cell-a"/><rect x="696" y="240" width="78" height="78" class="cell-b"/>
+    <rect x="150" y="318" width="78" height="78" class="cell-b"/><rect x="228" y="318" width="78" height="78" class="cell-a"/><rect x="306" y="318" width="78" height="78" class="cell-b"/><rect x="384" y="318" width="78" height="78" class="cell-a"/><rect x="462" y="318" width="78" height="78" class="cell-b"/><rect x="540" y="318" width="78" height="78" class="cell-a"/><rect x="618" y="318" width="78" height="78" class="cell-b"/><rect x="696" y="318" width="78" height="78" class="cell-a"/>
+    <rect x="150" y="396" width="78" height="78" class="cell-a"/><rect x="228" y="396" width="78" height="78" class="cell-b"/><rect x="306" y="396" width="78" height="78" class="cell-a"/><rect x="384" y="396" width="78" height="78" class="cell-b"/><rect x="462" y="396" width="78" height="78" class="cell-a"/><rect x="540" y="396" width="78" height="78" class="cell-b"/><rect x="618" y="396" width="78" height="78" class="cell-a"/><rect x="696" y="396" width="78" height="78" class="cell-b"/>
+    <rect x="150" y="474" width="78" height="78" class="cell-b"/><rect x="228" y="474" width="78" height="78" class="cell-a"/><rect x="306" y="474" width="78" height="78" class="cell-b"/><rect x="384" y="474" width="78" height="78" class="active"/><rect x="462" y="474" width="78" height="78" class="cell-b"/><rect x="540" y="474" width="78" height="78" class="cell-a"/><rect x="618" y="474" width="78" height="78" class="cell-b"/><rect x="696" y="474" width="78" height="78" class="cell-a"/>
+    <rect x="150" y="552" width="78" height="78" class="cell-a"/><rect x="228" y="552" width="78" height="78" class="cell-b"/><rect x="306" y="552" width="78" height="78" class="cell-a"/><rect x="384" y="552" width="78" height="78" class="cell-b"/><rect x="462" y="552" width="78" height="78" class="cell-a"/><rect x="540" y="552" width="78" height="78" class="cell-b"/><rect x="618" y="552" width="78" height="78" class="cell-a"/><rect x="696" y="552" width="78" height="78" class="cell-b"/>
+    <rect x="150" y="630" width="78" height="78" class="cell-b"/><rect x="228" y="630" width="78" height="78" class="cell-a"/><rect x="306" y="630" width="78" height="78" class="cell-b"/><rect x="384" y="630" width="78" height="78" class="cell-a"/><rect x="462" y="630" width="78" height="78" class="cell-b"/><rect x="540" y="630" width="78" height="78" class="cell-a"/><rect x="618" y="630" width="78" height="78" class="cell-b"/><rect x="696" y="630" width="78" height="78" class="cell-a"/>
+    <rect x="150" y="708" width="78" height="78" class="cell-a"/><rect x="228" y="708" width="78" height="78" class="cell-b"/><rect x="306" y="708" width="78" height="78" class="cell-a"/><rect x="384" y="708" width="78" height="78" class="cell-b"/><rect x="462" y="708" width="78" height="78" class="cell-a"/><rect x="540" y="708" width="78" height="78" class="cell-b"/><rect x="618" y="708" width="78" height="78" class="cell-a"/><rect x="696" y="708" width="78" height="78" class="cell-b"/>
+    <rect x="150" y="786" width="78" height="78" class="cell-b"/><rect x="228" y="786" width="78" height="78" class="cell-a"/><rect x="306" y="786" width="78" height="78" class="cell-b"/><rect x="384" y="786" width="78" height="78" class="cell-a"/><rect x="462" y="786" width="78" height="78" class="cell-b"/><rect x="540" y="786" width="78" height="78" class="cell-a"/><rect x="618" y="786" width="78" height="78" class="cell-b"/><rect x="696" y="786" width="78" height="78" class="cell-a"/>
+  </g>
+
+  <rect x="150" y="240" width="624" height="624" class="board-border"/>
+
+  <!-- coordinates -->
+  <text x="189" y="900" text-anchor="middle" class="coord">A</text><text x="267" y="900" text-anchor="middle" class="coord">B</text><text x="345" y="900" text-anchor="middle" class="coord">C</text><text x="423" y="900" text-anchor="middle" class="coord">D</text><text x="501" y="900" text-anchor="middle" class="coord">E</text><text x="579" y="900" text-anchor="middle" class="coord">F</text><text x="657" y="900" text-anchor="middle" class="coord">G</text><text x="735" y="900" text-anchor="middle" class="coord">H</text>
+
+  <text x="112" y="286" text-anchor="middle" class="coord">8</text><text x="112" y="364" text-anchor="middle" class="coord">7</text><text x="112" y="442" text-anchor="middle" class="coord">6</text><text x="112" y="520" text-anchor="middle" class="coord">5</text><text x="112" y="598" text-anchor="middle" class="coord">4</text><text x="112" y="676" text-anchor="middle" class="coord">3</text><text x="112" y="754" text-anchor="middle" class="coord">2</text><text x="112" y="832" text-anchor="middle" class="coord">1</text>
+
+  <!-- bus emphasis -->
+  <line x1="423" y1="895" x2="423" y2="558" class="bus-col"/>
+  <line x1="810" y1="513" x2="468" y2="513" class="bus-row"/>
+  <path d="M420 932 H770" class="bus-col"/>
+  <text x="595" y="964" text-anchor="middle" class="small">colunas A–H</text>
+  <path d="M825 250 V845" class="bus-row"/>
+  <text x="864" y="550" transform="rotate(90 864 550)" text-anchor="middle" class="small">linhas 1–8</text>
+
+  <!-- active cell label -->
+  <circle cx="423" cy="513" r="22" fill="#16a34a" stroke="#14532d" stroke-width="3"/>
+  <text x="423" y="521" text-anchor="middle" font="800 21px Arial" fill="#ffffff">N</text>
+  <path d="M462 474 C540 410, 625 380, 710 360" class="arrow"/>
+  <rect x="700" y="312" width="190" height="70" class="green"/>
+  <text x="795" y="340" text-anchor="middle" class="label">Casa D5</text>
+  <text x="795" y="366" text-anchor="middle" class="small">peça detectada</text>
+
+  <!-- RIGHT PANEL -->
+  <rect x="1025" y="130" width="520" height="800" class="panel"/>
+  <text x="1285" y="180" text-anchor="middle" class="panel-title">Como uma casa é lida</text>
+
+  <!-- schematic detail -->
+  <rect x="1075" y="225" width="420" height="205" fill="#ffffff" stroke="#cbd5e1" stroke-width="3" rx="18"/>
+  <text x="1285" y="260" text-anchor="middle" class="label">reed switch + diodo</text>
+
+  <text x="1125" y="315" text-anchor="middle" class="small" fill="#2563eb">COLUNA</text>
+  <line x1="1085" y1="345" x2="1170" y2="345" class="bus-col"/>
+
+  <line x1="1180" y1="372" x2="1225" y2="327" class="reed"/>
+  <line x1="1244" y1="309" x2="1288" y2="265" class="reed"/>
+  <text x="1235" y="400" text-anchor="middle" class="small">reed</text>
+
+  <polygon points="1305,345 1355,315 1355,375" fill="#f3e8ff" stroke="#7e22ce" stroke-width="5"/>
+  <line x1="1372" y1="310" x2="1372" y2="380" class="diode"/>
+  <text x="1345" y="400" text-anchor="middle" class="small">diodo</text>
+
+  <line x1="1378" y1="345" x2="1485" y2="345" class="bus-row"/>
+  <text x="1445" y="315" text-anchor="middle" class="small" fill="#ea580c">LINHA</text>
+
+  <circle cx="1245" cy="286" r="22" fill="#16a34a" stroke="#14532d" stroke-width="3"/>
+  <text x="1245" y="294" text-anchor="middle" font="800 21px Arial" fill="#ffffff">N</text>
+  <path d="M1245 250 V220" class="arrow"/>
+  <text x="1245" y="213" text-anchor="middle" class="small">ímã da peça</text>
+
+  <!-- steps -->
+  <rect x="1080" y="485" width="185" height="120" class="blue"/>
+  <text x="1172" y="525" text-anchor="middle" class="label">1</text>
+  <text x="1172" y="560" text-anchor="middle" class="text">ativa uma</text>
+  <text x="1172" y="587" text-anchor="middle" class="text">coluna</text>
+
+  <rect x="1305" y="485" width="185" height="120" class="orange"/>
+  <text x="1397" y="525" text-anchor="middle" class="label">2</text>
+  <text x="1397" y="560" text-anchor="middle" class="text">lê as</text>
+  <text x="1397" y="587" text-anchor="middle" class="text">linhas</text>
+
+  <rect x="1080" y="635" width="185" height="120" class="green"/>
+  <text x="1172" y="675" text-anchor="middle" class="label">3</text>
+  <text x="1172" y="710" text-anchor="middle" class="text">reed fechado</text>
+  <text x="1172" y="737" text-anchor="middle" class="text">= peça</text>
+
+  <rect x="1305" y="635" width="185" height="120" class="purple"/>
+  <text x="1397" y="675" text-anchor="middle" class="label">4</text>
+  <text x="1397" y="710" text-anchor="middle" class="text">coluna + linha</text>
+  <text x="1397" y="737" text-anchor="middle" class="text">= casa</text>
+
+  <rect x="1080" y="805" width="410" height="80" class="yellow"/>
+  <text x="1285" y="837" text-anchor="middle" class="label">Exemplo: D + 5 = D5</text>
+  <text x="1285" y="866" text-anchor="middle" class="small">A mesma lógica é repetida nas 64 casas.</text>
+</svg>

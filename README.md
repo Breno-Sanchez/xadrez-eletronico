@@ -112,7 +112,7 @@ A arquitetura é composta por quatro blocos principais:
 ## Matriz de reed switches
 
 <p align="center">
-  <img src="docs/assets/images/matriz-reed-switches-v2.svg" alt="Matriz 8x8 de reed switches com diodos" width="1000">
+  <img src="docs/assets/figures/matriz-reed-switches.svg" alt="Matriz 8x8 de reed switches com diodos" width="1000">
 </p>
 
 A matriz é formada por **8 colunas** e **8 linhas**, totalizando **64 casas**. Cada casa possui um reed switch em série com um diodo. Quando uma peça com ímã é posicionada sobre uma casa, o reed switch fecha e cria um caminho elétrico entre a coluna e a linha correspondentes.
@@ -234,7 +234,7 @@ flowchart TD
 │   ├── BOM.md
 │   ├── BOM.csv
 │   └── assets/
-│       └── images/
+│       └── figures/
 ├── hardware/
 │   ├── schematics/
 │   └── stl/
@@ -251,7 +251,7 @@ Pastas principais:
 |---|---|
 | [`main/`](main/) | Código-fonte do firmware ESP-IDF |
 | [`docs/`](docs/) | Documentação auxiliar e lista de materiais |
-| [`docs/assets/images/`](docs/assets/images/) | Imagens e diagramas visuais do projeto |
+| [`docs/assets/figures/`](docs/assets/figures/) | Figuras e diagramas vetoriais do projeto |
 | [`hardware/schematics/`](hardware/schematics/) | Esquemáticos do circuito |
 | [`hardware/stl/`](hardware/stl/) | Arquivos mecânicos/STL |
 | [`scripts/`](scripts/) | Scripts auxiliares de build, flash e monitor |
@@ -337,9 +337,11 @@ O protótipo demonstra a viabilidade de um tabuleiro eletrônico capaz de conver
 
 ---
 
-## Autor
+## Autores
 
-**Breno Sanchez**  
+- **Breno Gabriel Barão Sanchez**
+- **Jhonattan Santana**
+
 Disciplina: **OI25CP-7CPE**
 
 ---
