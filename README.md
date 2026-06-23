@@ -112,7 +112,7 @@ A arquitetura é composta por quatro blocos principais:
 ## Matriz de reed switches
 
 <p align="center">
-  <img src="docs/assets/figures/matriz-reed-switches.svg" alt="Matriz 8x8 de reed switches com diodos" width="1000">
+  <img src="docs/assets/figures/matriz-reed-switches.png" alt="Matriz 8x8 de reed switches com diodos" width="1000">
 </p>
 
 A matriz é formada por **8 colunas** e **8 linhas**, totalizando **64 casas**. Cada casa possui um reed switch em série com um diodo. Quando uma peça com ímã é posicionada sobre uma casa, o reed switch fecha e cria um caminho elétrico entre a coluna e a linha correspondentes.
