@@ -1,0 +1,12 @@
+Item,Componente,Quantidade,Especificacao,Observacoes
+1,ESP32 DevKit V1,1,Microcontrolador ESP32,Controle da matriz Wi-Fi e comunicacao serial
+2,Reed switch,64,Normalmente aberto,Um sensor por casa
+3,Diodo de sinal,64,1N4148 ou equivalente,Isolamento eletrico da matriz
+4,Resistor,8 ou mais,10 kOhm,Pull-up ou pull-down conforme estrategia de leitura
+5,Ima de neodimio,32,Pequeno para base da peca,Acionamento dos reed switches
+6,Pecas de xadrez,32,Conjunto padrao,Adaptadas com imas
+7,Jumpers,Conforme montagem,Macho-femea ou macho-macho,Ligacao dos barramentos
+8,Fios,Conforme montagem,Rigidos ou flexiveis,Linhas e colunas da matriz
+9,Base do tabuleiro,1,MDF acrilico papelao ou impresso,Estrutura fisica
+10,Cabo USB,1,USB para ESP32,Alimentacao e gravacao
+11,Fita cola fixacao,Conforme montagem,Fita cola quente ou similar,Organizacao mecanica
