@@ -1,436 +1,490 @@
-# Xadrez Eletrônico
+# MidPoint Weka Benchmark
 
-<p align="center">
-  <img src="docs/assets/diagrams/arquitetura-sistema.svg" alt="Arquitetura do Xadrez Eletrônico" width="920">
-</p>
+Este projeto organiza a implementação do classificador **MidPoint** para o Weka e um pipeline experimental para comparar o método com classificadores clássicos em bases ARFF.
 
-<p align="center">
-  <a href="https://github.com/Breno-Sanchez/xadrez-eletronico"><img alt="GitHub Repo" src="https://img.shields.io/badge/GitHub-xadrez--eletronico-181717?logo=github"></a>
-  <img alt="ESP32" src="https://img.shields.io/badge/MCU-ESP32-blue">
-  <img alt="ESP-IDF" src="https://img.shields.io/badge/Framework-ESP--IDF-green">
-  <img alt="Language" src="https://img.shields.io/badge/Linguagem-C-orange">
-  <img alt="License" src="https://img.shields.io/badge/Licen%C3%A7a-MIT-lightgrey">
-</p>
+O objetivo é avaliar uma heurística geométrica baseada em:
 
-Projeto desenvolvido para a disciplina **OI25CP-7CPE**.
+- protótipos originais;
+- protótipos propagados entre vizinhos da mesma classe;
+- barreiras geradas entre vizinhos de classes opostas;
+- penalização de caminhos que atravessam regiões de conflito.
 
-O **Xadrez Eletrônico** é um protótipo de tabuleiro inteligente baseado em **ESP32 DevKit V1**, sensores magnéticos do tipo **reed switch**, diodos de isolamento e peças com **ímãs de neodímio**. A proposta é detectar automaticamente a presença das peças nas casas do tabuleiro e disponibilizar o estado do jogo por firmware embarcado.
-
-> Estado atual do firmware: o código embarcado já possui arquitetura modular com sensor, LED e servidor, porém o módulo de sensoriamento versionado atualmente opera como **protótipo de validação em uma casa/sensor**. A expansão para leitura matricial 8x8 completa é parte da evolução técnica do projeto.
+A implementação foi pensada para experimentos acadêmicos com foco em comparação contra KNN e outros classificadores de referência.
 
 ---
 
-## Sumário
+## Estrutura do projeto
 
-- [Objetivo](#objetivo)
-- [Visão geral do funcionamento](#visão-geral-do-funcionamento)
-- [Arquitetura do sistema](#arquitetura-do-sistema)
-- [Circuito de uma casa](#circuito-de-uma-casa)
-- [Hardware e BOM](#hardware-e-bom)
-- [Firmware](#firmware)
-- [Estrutura do repositório](#estrutura-do-repositório)
-- [Como compilar](#como-compilar)
-- [Como gravar no ESP32](#como-gravar-no-esp32)
-- [Testes e validação](#testes-e-validação)
-- [Imagens, diagramas e STL](#imagens-diagramas-e-stl)
-- [Status do projeto](#status-do-projeto)
-- [Próximos passos](#próximos-passos)
-
----
-
-## Objetivo
-
-Construir um protótipo de tabuleiro de xadrez eletrônico capaz de detectar a presença de peças nas casas do tabuleiro, integrando:
-
-- eletrônica digital;
-- matriz de sensores magnéticos;
-- firmware embarcado com ESP-IDF;
-- organização modular de software;
-- documentação técnica de hardware, firmware, montagem e testes.
-
-O projeto também serve como base para futuras melhorias, como validação automática de movimentos, interface web, integração com engine de xadrez e detecção completa do estado do jogo.
-
----
-
-## Visão geral do funcionamento
-
-Cada casa do tabuleiro é projetada para conter um reed switch. Cada peça recebe um ímã de neodímio em sua base. Quando a peça é posicionada sobre uma casa, o campo magnético fecha o reed switch correspondente. O microcontrolador lê o estado elétrico e atualiza a representação do tabuleiro.
-
-```mermaid
-flowchart LR
-    A[Peça com ímã de neodímio] --> B[Reed switch fecha contato]
-    B --> C[Sinal elétrico na casa]
-    C --> D[ESP32 lê sensor ou matriz]
-    D --> E[Firmware processa evento]
-    E --> F[Interface serial/HTTP exibe estado]
-```
-
-No protótipo atual, o firmware lê um sensor de validação. Na versão matricial completa, o ESP32 deve varrer linhas e colunas para identificar todas as casas ocupadas.
-
----
-
-## Arquitetura do sistema
-
-<p align="center">
-  <img src="docs/assets/diagrams/arquitetura-sistema.svg" alt="Arquitetura do sistema" width="920">
-</p>
-
-A arquitetura é dividida em quatro blocos:
-
-| Bloco | Função |
-|---|---|
-| Peças com ímãs | Acionam magneticamente os reed switches |
-| Matriz 8x8 | Representa as 64 casas do tabuleiro |
-| ESP32 DevKit V1 | Realiza leitura, processamento e comunicação |
-| Interface | Exibe ou disponibiliza o estado do tabuleiro |
-
-Fluxo lógico do firmware:
-
-```mermaid
-flowchart TD
-    A[app_main] --> B[Cria filas FreeRTOS]
-    B --> C[Inicializa LED]
-    C --> D[Inicializa sensor]
-    D --> E[Inicializa servidor]
-    E --> F[Inicializa rede]
-    F --> G[Cria ledTask]
-    F --> H[Cria serverTask]
-    F --> I[Cria sensorTask]
-    I --> J[Eventos de peça]
-    J --> H
-    H --> G
-```
-
-Arquivos principais:
-
-- [`main/main.c`](main/main.c): inicialização do sistema, filas e tarefas.
-- [`main/sensor.c`](main/sensor.c): leitura do sensor de validação.
-- [`main/led.c`](main/led.c): controle visual por LED.
-- [`main/server.c`](main/server.c): servidor/interface e comunicação.
-- [`main/app_types.h`](main/app_types.h): tipos compartilhados entre módulos.
-
----
-
-## Circuito de uma casa
-
-<p align="center">
-  <img src="docs/assets/diagrams/ligacao-casa.svg" alt="Ligação elétrica de uma casa" width="920">
-</p>
-
-Ligação conceitual:
-
-```text
-COLUNA ---- reed switch ---- anodo do diodo |>| catodo/faixa ---- LINHA
-```
-
-Função dos componentes:
-
-| Componente | Função |
-|---|---|
-| Reed switch | Fecha contato quando uma peça com ímã está sobre a casa |
-| Diodo | Reduz caminhos indesejados de corrente na matriz |
-| Resistor | Define estado lógico estável quando o sensor está aberto |
-| ESP32 | Ativa/leitura os sinais e interpreta a ocupação |
-
-Cuidados elétricos:
-
-- conferir orientação dos diodos;
-- manter GND comum entre matriz e ESP32;
-- evitar entradas digitais flutuando;
-- evitar GPIO1 e GPIO3, usados pela UART principal;
-- usar GPIO34/GPIO35 com cuidado, pois são apenas entrada e não têm pull-up/pull-down interno;
-- validar uma casa por vez antes de testar o conjunto completo.
-
----
-
-## Hardware e BOM
-
-| Item | Componente | Quantidade | Função |
-|---:|---|---:|---|
-| 1 | ESP32 DevKit V1 | 1 | Controle embarcado, Wi-Fi e comunicação |
-| 2 | Reed switch | 64 | Sensoriamento magnético das casas |
-| 3 | Diodo de sinal | 64 | Isolamento elétrico da matriz |
-| 4 | Ímã de neodímio | 32 | Acionamento dos sensores pelas peças |
-| 5 | Peças de xadrez | 32 | Peças adaptadas com ímãs |
-| 6 | Resistores de 10 kΩ | 8 ou mais | Pull-up/pull-down conforme estratégia |
-| 7 | Jumpers e fios | Conforme montagem | Barramentos de linhas e colunas |
-| 8 | Base do tabuleiro | 1 | Estrutura mecânica |
-| 9 | Cabo USB | 1 | Alimentação, gravação e monitor serial |
-
-Arquivos relacionados:
-
-- [`docs/BOM.md`](docs/BOM.md): BOM em Markdown.
-- [`docs/BOM.csv`](docs/BOM.csv): BOM em CSV para planilha.
-- [`hardware/schematics/`](hardware/schematics/): esquemáticos e arquivos de circuito.
-- [`hardware/stl/`](hardware/stl/): modelos STL e peças mecânicas.
-
----
-
-## Firmware
-
-O firmware foi desenvolvido em **C** com **ESP-IDF** para **ESP32 DevKit V1**.
-
-### Organização dos módulos
-
-| Arquivo | Responsabilidade |
-|---|---|
-| [`main/main.c`](main/main.c) | Inicialização geral, filas e criação de tarefas |
-| [`main/sensor.c`](main/sensor.c) | Leitura do sensor de validação |
-| [`main/sensor.h`](main/sensor.h) | Interface pública do módulo de sensor |
-| [`main/led.c`](main/led.c) | Controle de LEDs/indicação visual |
-| [`main/led.h`](main/led.h) | Interface pública do módulo de LED |
-| [`main/server.c`](main/server.c) | Rede, servidor e estado exposto |
-| [`main/server.h`](main/server.h) | Interface pública do módulo de servidor |
-| [`main/app_types.h`](main/app_types.h) | Estruturas e tipos compartilhados |
-
-### Estado atual do sensor
-
-O sensor atual usa um GPIO de validação:
-
-```c
-#define REED_GPIO GPIO_NUM_13
-```
-
-A versão futura deve substituir esse modelo por varredura matricial:
-
-```c
-static const gpio_num_t ROW_PINS[8] = { ... };
-static const gpio_num_t COL_PINS[8] = { ... };
-```
-
-Estratégia recomendada para matriz 8x8:
-
-```mermaid
-flowchart TD
-    A[Colunas em alta impedância] --> B[Seleciona uma coluna]
-    B --> C[Ativa coluna]
-    C --> D[Aguarda estabilização]
-    D --> E[Lê as 8 linhas]
-    E --> F[Armazena estado das casas]
-    F --> G{Ainda há colunas?}
-    G -->|Sim| B
-    G -->|Não| H[Publica estado do tabuleiro]
-```
-
----
-
-## Estrutura do repositório
-
-```text
-.
-├── CMakeLists.txt
-├── README.md
-├── LICENSE
-├── dependencies.lock
-├── partitions.csv
-├── sdkconfig.defaults
-├── main
-│   ├── CMakeLists.txt
-│   ├── idf_component.yml
-│   ├── app_types.h
-│   ├── main.c
-│   ├── sensor.c
-│   ├── sensor.h
-│   ├── led.c
-│   ├── led.h
-│   ├── server.c
-│   └── server.h
-├── docs
-│   ├── BOM.md
-│   ├── BOM.csv
-│   ├── 01-visao-geral.md
-│   ├── 02-arquitetura.md
-│   ├── 03-hardware.md
-│   ├── 04-firmware.md
-│   ├── 05-montagem.md
-│   ├── 06-testes.md
-│   └── assets
-│       ├── diagrams
-│       │   ├── arquitetura-sistema.svg
-│       │   └── ligacao-casa.svg
-│       └── images
-├── hardware
-│   ├── schematics
-│   └── stl
-└── scripts
-    ├── build.sh
-    ├── flash_acm0.sh
-    ├── monitor_acm0.sh
-    └── clean.sh
-```
-
----
-
-## Como compilar
-
-### Usando ESP-IDF diretamente
+Diretório principal esperado:
 
 ```bash
-git clone https://github.com/Breno-Sanchez/xadrez-eletronico.git
-cd xadrez-eletronico
-source ~/esp/esp-idf/export.sh
-idf.py set-target esp32
-idf.py build
+/home/breno/Downloads/AM/classificador
 ```
 
-### Usando script
+Estrutura usada:
+
+```text
+classificador/
+├── bases/
+│   ├── banana.arff
+│   ├── banknote-authentication.arff
+│   ├── blood-transfusion-service-center.arff
+│   ├── climate-model-simulation-crashes.arff
+│   ├── diabetes.arff
+│   ├── ionosphere.arff
+│   ├── phoneme.arff
+│   ├── sonar.arff
+│   ├── spambase.arff
+│   └── wdbc.arff
+│
+├── midpoint-weka/
+│   ├── src/weka/classifiers/misc/MidPoint.java
+│   ├── build/
+│   └── midpoint-weka.jar
+│
+├── results/
+│   ├── results.csv
+│   ├── summary_by_config.csv
+│   ├── midpoint_vs_knn.csv
+│   ├── classifier_specs.csv
+│   ├── bench_latest.log
+│   └── images/
+│
+├── bench
+├── plot
+└── README.md
+```
+
+---
+
+## Dependências
+
+O projeto usa:
+
+- Java;
+- Weka 3.8.7;
+- Python 3;
+- `matplotlib`;
+- `numpy`;
+- `pandas`.
+
+Caminho esperado do Weka:
 
 ```bash
-./scripts/build.sh
+/home/breno/Downloads/weka-3-8-7-bellsoft-x64-linux/weka-3-8-7/weka.jar
 ```
 
-O script [`scripts/build.sh`](scripts/build.sh) carrega o ESP-IDF, configura o alvo `esp32` e executa o build.
-
----
-
-## Como gravar no ESP32
-
-Para gravar e abrir o monitor serial:
+Caminho esperado do JAR do MidPoint:
 
 ```bash
-idf.py -p /dev/ttyACM0 flash monitor
+/home/breno/Downloads/AM/classificador/midpoint-weka/midpoint-weka.jar
 ```
 
-Também é possível usar:
+---
+
+## Compilar o MidPoint
+
+Sempre que alterar `MidPoint.java`, recompile:
 
 ```bash
-./scripts/flash_acm0.sh
-./scripts/monitor_acm0.sh
+cd /home/breno/Downloads/AM/classificador/midpoint-weka
+
+export WEKA_JAR="/home/breno/Downloads/weka-3-8-7-bellsoft-x64-linux/weka-3-8-7/weka.jar"
+
+rm -rf build midpoint-weka.jar
+mkdir -p build
+
+javac -cp "$WEKA_JAR" \
+  -d build \
+  src/weka/classifiers/misc/MidPoint.java
+
+jar cf midpoint-weka.jar -C build .
 ```
 
-Para sair do monitor serial:
+---
+
+## Atalhos no terminal
+
+Para chamar os scripts de qualquer pasta:
+
+```bash
+mkdir -p ~/.local/bin
+
+ln -sf /home/breno/Downloads/AM/classificador/bench ~/.local/bin/bench
+ln -sf /home/breno/Downloads/AM/classificador/plot  ~/.local/bin/plot
+
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+---
+
+## Executar o benchmark
+
+O script `bench` executa os classificadores e salva os resultados em CSV.
+
+Por padrão, ele roda:
+
+- todas as bases;
+- preprocessamento `both`, isto é, `raw` e `norm`;
+- `10-fold cross-validation`;
+- log automático;
+- sem geração de imagens.
+
+Rodar todas as bases com `seed=1` e `timeout=100`:
+
+```bash
+bench --seeds 1 --timeout 100
+```
+
+Rodar apenas uma base:
+
+```bash
+bench --bases sonar.arff --seeds 1 --timeout 100
+```
+
+Rodar bases específicas:
+
+```bash
+bench \
+  --bases sonar.arff,ionosphere.arff,phoneme.arff,spambase.arff \
+  --seeds 1 \
+  --timeout 100
+```
+
+---
+
+## Arquivos gerados pelo benchmark
+
+Após executar o `bench`, os principais arquivos são:
 
 ```text
-Ctrl + ]
+results/results.csv
+results/summary_by_config.csv
+results/midpoint_vs_knn.csv
+results/classifier_specs.csv
+results/bench_latest.log
+```
+
+### `results.csv`
+
+Contém todas as execuções individuais, incluindo:
+
+- base;
+- algoritmo;
+- variante;
+- preprocessamento;
+- seed;
+- status;
+- acurácia;
+- precisão;
+- recall;
+- F1;
+- MCC;
+- Kappa;
+- matriz de confusão;
+- tempo;
+- comando executado.
+
+### `summary_by_config.csv`
+
+Agrupa os resultados por configuração e calcula médias.
+
+### `midpoint_vs_knn.csv`
+
+Compara o melhor MidPoint contra o melhor KNN por base.
+
+### `classifier_specs.csv`
+
+Registra as configurações executadas por cada classificador.
+
+---
+
+## Gerar imagens
+
+O script `plot` lê os CSVs já gerados pelo `bench` e cria figuras para artigo ou apresentação.
+
+Rodar com configuração padrão:
+
+```bash
+plot
+```
+
+Rodar apenas para uma base:
+
+```bash
+plot --bases sonar.arff
+```
+
+Rodar para algumas bases:
+
+```bash
+plot --bases sonar.arff,ionosphere.arff,phoneme.arff,spambase.arff
+```
+
+Excluir bases suspeitas:
+
+```bash
+plot --exclude MagicTelescope.arff,eeg-eye-state.arff
+```
+
+Gerar também em PDF:
+
+```bash
+plot --pdf
+```
+
+As imagens são salvas em:
+
+```bash
+/home/breno/Downloads/AM/classificador/results/images
 ```
 
 ---
 
-## Testes e validação
+## Figuras geradas pelo `plot`
 
-### Teste sem peça
-
-Resultado esperado:
+O script gera 10 imagens principais:
 
 ```text
-Peça ausente ou sensor aberto
+01_executive_summary.png
+02_accuracy_heatmap_best_by_algorithm.png
+03_f1_kappa_heatmaps.png
+04_midpoint_vs_knn_delta.png
+05_midpoint_ablation_gain_heatmap.png
+06_midpoint_configuration_matrix.png
+07_confusion_error_comparison.png
+08_accuracy_runtime_tradeoff.png
+09_mean_rank_comparison.png
+10_dataset_leaderboards.png
 ```
 
-### Teste com peça no sensor de validação
+Essas figuras foram pensadas para:
 
-Resultado esperado:
+- artigo científico;
+- apresentação em slides;
+- análise crítica do comportamento do MidPoint;
+- comparação contra KNN e outros classificadores;
+- análise de ablação;
+- análise de trade-off entre desempenho e tempo.
+
+---
+
+## Classificadores comparados
+
+O benchmark inclui:
+
+- `ZeroR`;
+- `MidPoint`;
+- `KNN / IBk`;
+- `RandomForest`;
+- `SMO`;
+- `Logistic`;
+- `NaiveBayes`;
+- `J48`;
+- `LMT`;
+- `AdaBoostM1`;
+- `MultilayerPerceptron`.
+
+O `ZeroR` é usado como baseline de classe majoritária.
+
+---
+
+## Preprocessamento
+
+O parâmetro `--preprocess both` executa duas versões:
 
 ```text
-Peça detectada pelo reed switch
-Evento enviado para a fila do firmware
-Interface/LED atualizados
+raw  = base original
+norm = base com Normalize do Weka
 ```
 
-### Teste futuro da matriz 8x8
-
-Quando a varredura completa for implementada, validar:
+A normalização usada é:
 
 ```text
-a1 b1 c1 d1 e1 f1 g1 h1
-a2 b2 c2 d2 e2 f2 g2 h2
-...
-a8 b8 c8 d8 e8 f8 g8 h8
+weka.filters.unsupervised.attribute.Normalize -S 1.0 -T 0.0
 ```
 
-Com jogo inicial completo:
+O `ZeroR` roda apenas uma vez, pois normalizar os atributos não altera o resultado dele.
+
+---
+
+## Parâmetros do MidPoint
+
+Os principais parâmetros são:
 
 ```text
-32 peças detectadas
-linhas ocupadas: 1, 2, 7 e 8
+-S sameNeighbors
+-D diffNeighbors
+-R pathCandidates
+-P barrierPenalty
 ```
 
-### Diagnóstico rápido
+Interpretação:
 
-| Sintoma | Possível causa |
-|---|---|
-| Casa acesa sem peça | Entrada flutuando, curto, reed preso ou resistor ausente |
-| Linha inteira acesa | Curto, linha flutuando ou erro de pull-up/pull-down |
-| Coluna inteira ausente | GPIO errado, fio solto ou coluna sem continuidade |
-| Casa invertida | Ordem física diferente do array no firmware |
-| Peça desaparece ao mover outra | Ghosting, diodo invertido ou caminho de fuga |
-| Poucas peças detectadas | Reed não acionado, ímã fraco ou distância excessiva |
+```text
+-S  controla quantos vizinhos da mesma classe são usados para gerar protótipos propagados.
+-D  controla quantos vizinhos de classe oposta são usados para gerar barreiras.
+-R  controla quantos candidatos por classe são avaliados na classificação.
+-P  controla o peso da penalidade causada pelas barreiras.
+```
 
----
+Exemplo de configuração que obteve bom resultado no `sonar.arff`:
 
-## Imagens, diagramas e STL
+```text
+MidPoint F_R5_P05_norm
+-S 1 -D 1 -R 5 -P 0.5
+```
 
-### Diagramas já incluídos
+Resultado observado no `sonar.arff`:
 
-- [`docs/assets/diagrams/arquitetura-sistema.svg`](docs/assets/diagrams/arquitetura-sistema.svg)
-- [`docs/assets/diagrams/ligacao-casa.svg`](docs/assets/diagrams/ligacao-casa.svg)
-
-### Fotos reais recomendadas
-
-Adicionar em [`docs/assets/images/`](docs/assets/images/):
-
-| Imagem sugerida | Conteúdo |
-|---|---|
-| `prototipo-tabuleiro.jpg` | Foto geral do tabuleiro montado |
-| `esp32-ligado.jpg` | ESP32 conectado ao circuito |
-| `detalhe-reed-switches.jpg` | Detalhe dos reed switches |
-| `detalhe-diodos.jpg` | Detalhe da orientação dos diodos |
-| `terminal-serial.jpg` | Saída do firmware no monitor serial |
-| `pecas-com-imas.jpg` | Peças adaptadas com ímãs |
-
-Para inserir uma foto no README depois:
-
-```markdown
-<p align="center">
-  <img src="docs/assets/images/prototipo-tabuleiro.jpg" alt="Protótipo do tabuleiro" width="800">
-</p>
+```text
+Acurácia: 89,4231%
+F1 weighted: 0,894
+Kappa: 0,7872
+Matriz: Rock:85 12; Mine:10 101
 ```
 
 ---
 
-## Status do projeto
+## Relação com KNN
 
-| Etapa | Status |
-|---|---|
-| Estrutura ESP-IDF | Concluída |
-| Firmware modular | Concluído |
-| Servidor/interface embarcada | Parcial |
-| Sensor de validação | Concluído |
-| Remoção de credenciais do código atual | Concluída |
-| Matriz física 8x8 | Em montagem/validação |
-| Leitura matricial 8x8 no firmware | Pendente |
-| Fotos reais no README | Pendente |
-| Esquemático final | Pendente |
-| Arquivos STL finais | Pendente |
+Sem protótipos propagados e sem barreiras, o MidPoint deve se comportar como um 1-NN:
 
----
+```text
+-S 0 -D 0 -R 1 -P 0.0
+```
 
-## Próximos passos
+Essa configuração é chamada no benchmark de:
 
-1. Implementar `sensor.c` com varredura real de matriz 8x8.
-2. Mover configuração de Wi-Fi/EAP para `Kconfig.projbuild`.
-3. Adicionar fotos reais do protótipo em `docs/assets/images/`.
-4. Criar esquemático final em `hardware/schematics/`.
-5. Adicionar arquivos STL finais em `hardware/stl/`.
-6. Validar as 64 casas individualmente.
-7. Atualizar o README com fotos reais e resultado final do teste.
+```text
+NP_Control_R1
+```
+
+Ela funciona como ablação de controle. Assim, o ganho do MidPoint completo pode ser atribuído aos componentes adicionados:
+
+- densidade por protótipos propagados;
+- penalização por barreiras;
+- combinação das duas heurísticas.
 
 ---
 
-## Segurança
+## Bases recomendadas
 
-As credenciais reais não devem ser versionadas no repositório. O código público deve manter apenas placeholders ou configurações locais não commitadas.
+Após auditoria, o conjunto principal recomendado é:
 
-Caso alguma credencial real tenha sido publicada anteriormente, ela deve ser considerada comprometida e substituída.
+```text
+banana.arff
+banknote-authentication.arff
+blood-transfusion-service-center.arff
+climate-model-simulation-crashes.arff
+diabetes.arff
+ionosphere.arff
+phoneme.arff
+sonar.arff
+spambase.arff
+wdbc.arff
+```
+
+Bases removidas do conjunto principal:
+
+```text
+MagicTelescope.arff
+eeg-eye-state.arff
+```
+
+Motivos:
+
+```text
+MagicTelescope.arff possui vazamento por atributo ID artificial.
+eeg-eye-state.arff possui dependência temporal incompatível com 10-fold CV aleatório.
+```
 
 ---
 
-## Autor
+## Comandos úteis
 
-**Breno Sanchez**  
-GitHub: [@Breno-Sanchez](https://github.com/Breno-Sanchez)
+Rodar benchmark completo:
+
+```bash
+bench --seeds 1 --timeout 100
+```
+
+Rodar apenas Sonar:
+
+```bash
+bench --bases sonar.arff --seeds 1 --timeout 100
+```
+
+Gerar imagens após o benchmark:
+
+```bash
+plot
+```
+
+Gerar imagens somente do Sonar:
+
+```bash
+plot --bases sonar.arff
+```
+
+Gerar imagens e PDFs:
+
+```bash
+plot --pdf
+```
+
+Limpar imagens antigas:
+
+```bash
+rm -f /home/breno/Downloads/AM/classificador/results/images/*.png
+rm -f /home/breno/Downloads/AM/classificador/results/images/*.pdf
+```
+
+Ver os melhores resultados rapidamente:
+
+```bash
+column -s, -t /home/breno/Downloads/AM/classificador/results/midpoint_vs_knn.csv | less -S
+```
 
 ---
 
-## Licença
+## Interpretação experimental
 
-Este projeto está disponível sob a licença MIT. Consulte [`LICENSE`](LICENSE).
+O MidPoint deve ser interpretado como uma extensão geométrica do 1-NN.
+
+A hipótese principal é:
+
+```text
+A propagação de protótipos reforça regiões de suporte local da classe,
+enquanto as barreiras penalizam decisões que atravessam regiões de conflito.
+```
+
+A leitura experimental recomendada é:
+
+1. comparar MidPoint contra `NP_Control_R1`;
+2. comparar MidPoint contra KNN com diferentes valores de `K`;
+3. avaliar se o ganho vem de protótipos, barreiras ou da combinação;
+4. usar F1, Kappa e MCC, não apenas acurácia;
+5. analisar tempo de execução como trade-off computacional.
+
+---
+
+## Observações metodológicas
+
+Para evitar conclusões frágeis:
+
+- não usar bases com ID artificial;
+- não usar bases temporais com validação cruzada aleatória;
+- não interpretar acurácia isoladamente em bases desbalanceadas;
+- sempre reportar matriz de confusão;
+- manter o mesmo preprocessamento ao comparar MidPoint e KNN;
+- usar múltiplas seeds quando o experimento final for consolidado.
+
+---
+
+## Licença e uso
+
+Este projeto foi organizado para experimentação acadêmica com o classificador MidPoint no Weka.
+
+Antes de usar os resultados em artigo, recomenda-se repetir os experimentos com múltiplas seeds e revisar as bases para evitar vazamento de dados, dependência temporal ou identificadores artificiais.
