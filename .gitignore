@@ -38,3 +38,10 @@ test/
 # OS files
 .DS_Store
 Thumbs.db
+
+# ESP-IDF generated files
+build-*/
+sdkconfig
+sdkconfig.*
+!sdkconfig.defaults
+!sdkconfig.defaults.*
