@@ -1,0 +1,11 @@
+build/
+managed_components/
+sdkconfig.old
+*.elf
+*.bin
+*.map
+*.log
+.cache/
+.vscode/
+.idea/
+__pycache__/
