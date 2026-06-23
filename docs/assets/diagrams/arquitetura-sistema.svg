@@ -1,0 +1,53 @@
+<svg width="1100" height="520" viewBox="0 0 1100 520" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 28px Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 16px Arial, sans-serif; fill: #374151; }
+      .box { fill: #f9fafb; stroke: #111827; stroke-width: 2; rx: 18; }
+      .box2 { fill: #ecfdf5; stroke: #047857; stroke-width: 2; rx: 18; }
+      .box3 { fill: #eff6ff; stroke: #1d4ed8; stroke-width: 2; rx: 18; }
+      .box4 { fill: #fff7ed; stroke: #c2410c; stroke-width: 2; rx: 18; }
+      .text { font: 700 18px Arial, sans-serif; fill: #111827; }
+      .small { font: 400 14px Arial, sans-serif; fill: #374151; }
+      .arrow { stroke: #111827; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 9 3, 0 6" fill="#111827"/>
+    </marker>
+  </defs>
+
+  <text x="550" y="45" text-anchor="middle" class="title">Arquitetura do Xadrez Eletrônico</text>
+  <text x="550" y="75" text-anchor="middle" class="subtitle">Sensoriamento magnético, firmware embarcado e interface de visualização</text>
+
+  <rect x="60" y="140" width="220" height="140" class="box2"/>
+  <text x="170" y="175" text-anchor="middle" class="text">Peças com ímãs</text>
+  <text x="170" y="205" text-anchor="middle" class="small">32 peças adaptadas</text>
+  <text x="170" y="230" text-anchor="middle" class="small">ímãs de neodímio</text>
+  <text x="170" y="255" text-anchor="middle" class="small">acionamento magnético</text>
+
+  <rect x="330" y="140" width="220" height="140" class="box"/>
+  <text x="440" y="175" text-anchor="middle" class="text">Matriz 8x8</text>
+  <text x="440" y="205" text-anchor="middle" class="small">64 reed switches</text>
+  <text x="440" y="230" text-anchor="middle" class="small">64 diodos de sinal</text>
+  <text x="440" y="255" text-anchor="middle" class="small">linhas e colunas</text>
+
+  <rect x="600" y="140" width="220" height="140" class="box3"/>
+  <text x="710" y="175" text-anchor="middle" class="text">ESP32 DevKit V1</text>
+  <text x="710" y="205" text-anchor="middle" class="small">ESP-IDF</text>
+  <text x="710" y="230" text-anchor="middle" class="small">FreeRTOS</text>
+  <text x="710" y="255" text-anchor="middle" class="small">leitura e processamento</text>
+
+  <rect x="870" y="140" width="180" height="140" class="box4"/>
+  <text x="960" y="175" text-anchor="middle" class="text">Interface</text>
+  <text x="960" y="205" text-anchor="middle" class="small">serial</text>
+  <text x="960" y="230" text-anchor="middle" class="small">servidor HTTP</text>
+  <text x="960" y="255" text-anchor="middle" class="small">estado do jogo</text>
+
+  <path d="M280 210 L330 210" class="arrow"/>
+  <path d="M550 210 L600 210" class="arrow"/>
+  <path d="M820 210 L870 210" class="arrow"/>
+
+  <rect x="170" y="360" width="760" height="90" class="box"/>
+  <text x="550" y="395" text-anchor="middle" class="text">Fluxo de dados</text>
+  <text x="550" y="425" text-anchor="middle" class="small">peça posicionada → reed fecha → ESP32 detecta → firmware atualiza estado → interface exibe/processa</text>
+</svg>
