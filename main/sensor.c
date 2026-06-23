@@ -9,7 +9,7 @@
 #include "freertos/task.h"
 #include "sensor.h"
 
-#define REED_GPIO                  GPIO_NUM_1
+#define REED_GPIO                  GPIO_NUM_13
 #define SENSOR_POLL_MS             (50U)
 #define SENSOR_STABLE_TICKS        (4U)
 

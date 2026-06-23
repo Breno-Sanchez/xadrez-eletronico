@@ -19,16 +19,16 @@
 #include "nvs_flash.h"
 #include "server.h"
 
-#define WIFI_SSID_TXT              "UTFPR-ALUNO"
-#define EAP_IDENTITY_TXT           "a2342774"
-#define EAP_USERNAME_TXT           "a2342774"
-#define WIFI_PASS_TXT              "breno2010"
+#define WIFI_SSID_TXT              "CONFIGURE_WIFI_SSID"
+#define EAP_IDENTITY_TXT           "CONFIGURE_EAP_IDENTITY"
+#define EAP_USERNAME_TXT           "CONFIGURE_EAP_USERNAME"
+#define WIFI_PASS_TXT              "CONFIGURE_WIFI_PASSWORD"
 #define SOFTAP_SSID_TXT           "XADREZ_ESP"
-#define SOFTAP_PASS_TXT           "xadrez12345"
+#define SOFTAP_PASS_TXT           "configure123"
 #define SOFTAP_CHANNEL            (1U)
 #define SOFTAP_MAX_CONNECTIONS    (2U)
 
-#define EAP_PASSWORD_TXT           "mrmugu14"
+#define EAP_PASSWORD_TXT           "CONFIGURE_EAP_PASSWORD"
 
 #define EAP_MAX_LEN                (127U)
 #define WIFI_WAIT_MS               (1000U)
