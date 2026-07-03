@@ -1,0 +1,14 @@
+fatal: detected dubious ownership in repository at 'F:/Espressif/frameworks/esp-idf-v5.3.1'
+'F:/Espressif/frameworks/esp-idf-v5.3.1' is on a file system that does not record ownership
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory F:/Espressif/frameworks/esp-idf-v5.3.1
+CMake Error at F:/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/build.cmake:268 (message):
+  Failed to resolve component 'led_strip'.
+Call Stack (most recent call first):
+  F:/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/build.cmake:310 (__build_resolve_and_add_req)
+  F:/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/build.cmake:607 (__build_expand_requirements)
+  F:/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/project.cmake:710 (idf_build_process)
+  CMakeLists.txt:6 (project)
+
+

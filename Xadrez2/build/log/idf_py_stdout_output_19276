@@ -1,0 +1,10 @@
+-- git rev-parse returned 'fatal: detected dubious ownership in repository at 'F:/Espressif/frameworks/esp-idf-v5.3.1'
+'F:/Espressif/frameworks/esp-idf-v5.3.1' is on a file system that does not record ownership
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory F:/Espressif/frameworks/esp-idf-v5.3.1'
+-- git rev-parse returned 'fatal: not a git repository (or any of the parent directories): .git'
+-- Could not use 'git describe' to determine PROJECT_VER.
+-- Building ESP-IDF components for target esp32
+-- Configuring incomplete, errors occurred!
+See also "F:/Espressif/workspace/Xadrez2/build/CMakeFiles/CMakeOutput.log".
