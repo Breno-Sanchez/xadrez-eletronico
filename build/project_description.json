@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "app-template",
-    "project_version":    "a47c418-dirty",
+    "project_version":    "5476998-dirty",
     "project_path":       "/home/breno/Downloads/OI/Xadrez",
     "idf_path":           "/home/breno/esp/esp-idf",
     "build_dir":          "/home/breno/Downloads/OI/Xadrez/build",
@@ -1191,7 +1191,7 @@
             "type": "LIBRARY",
             "lib": "__idf_main",
             "reqs": [],
-            "priv_reqs": [ "espressif__led_strip", "esp_driver_gpio", "esp_http_server", "esp_wifi", "esp_event", "esp_netif", "nvs_flash" ],
+            "priv_reqs": [ "espressif__led_strip", "esp_driver_gpio", "esp_http_server", "esp_wifi", "esp_event", "esp_netif", "nvs_flash", "wpa_supplicant" ],
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__led_strip" ],
             "file": "/home/breno/Downloads/OI/Xadrez/build/esp-idf/main/libmain.a",
@@ -2818,7 +2818,7 @@
             "dir": "/home/breno/Downloads/OI/Xadrez/main",
             "lib": "__idf_main",
             "reqs": [],
-            "priv_reqs": [ "espressif__led_strip", "esp_driver_gpio", "esp_http_server", "esp_wifi", "esp_event", "esp_netif", "nvs_flash" ],
+            "priv_reqs": [ "espressif__led_strip", "esp_driver_gpio", "esp_http_server", "esp_wifi", "esp_event", "esp_netif", "nvs_flash", "wpa_supplicant" ],
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__led_strip" ],
             "include_dirs": [ "." ]

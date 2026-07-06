@@ -7,11 +7,9 @@
 
 #include "app_types.h"
 #include "chess_logic.h"
-#include "esp_crt_bundle.h"
 #include "esp_eap_client.h"
 #include "esp_err.h"
 #include "esp_event.h"
-#include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -39,10 +37,6 @@
 #define FEN_TEXT_LEN               (128U)
 #define LEGAL_TEXT_LEN             (64U)
 #define PGN_TEXT_LEN               (1024U)
-#define HTTPS_URL_LEN              (384U)
-#define HTTPS_RESPONSE_LEN         (1024U)
-#define LICHESS_CLOUD_EVAL_URL     "https://lichess.org/api/cloud-eval?fen="
-#define LICHESS_URL_SUFFIX         "&multiPv=1"
 #define MAX_LANCES_PLAYBACK        (300U)
 
 typedef struct
@@ -252,7 +246,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
     snprintf(chunk, sizeof(chunk), "<div class=\"box\"><b>Casas válidas:</b> %s</div>", legal);
     SEND_CHUNK(chunk);
 
-    snprintf(chunk, sizeof(chunk), "<div class=\"box\"><b>Melhor jogada Lichess/Stockfish:</b> %s</div>", best);
+    snprintf(chunk, sizeof(chunk), "<div class=\"box\"><b>Melhor jogada local:</b> %s</div>", best);
     SEND_CHUNK(chunk);
 
     SEND_CHUNK("</div></div></body></html>");
@@ -268,6 +262,100 @@ static void updateState(const char * fen,
                         const char * best,
                         const char * legal,
                         const char * pgn);
+
+static int localPieceValue(TipoPeca tipo)
+{
+    switch (tipo)
+    {
+        case PEAO: return 100;
+        case CAVALO: return 320;
+        case BISPO: return 330;
+        case TORRE: return 500;
+        case RAINHA: return 900;
+        case REI: return 20000;
+        default: return 0;
+    }
+}
+
+static int localMoveScore(int lin_origem, int col_origem, int lin_destino, int col_destino)
+{
+    Peca origem = tabuleiro[lin_origem][col_origem];
+    Peca destino = tabuleiro[lin_destino][col_destino];
+    int score = 0;
+
+    score += localPieceValue(destino.tipo) * 10;
+
+    if ((origem.tipo == PEAO) && ((lin_destino == 0) || (lin_destino == 7)))
+    {
+        score += 800;
+    }
+
+    if ((lin_destino >= 2) && (lin_destino <= 5) &&
+        (col_destino >= 2) && (col_destino <= 5))
+    {
+        score += 15;
+    }
+
+    if ((origem.tipo == CAVALO) || (origem.tipo == BISPO))
+    {
+        if (((origem.cor == BRANCO) && (lin_origem == 7)) ||
+            ((origem.cor == PRETO) && (lin_origem == 0)))
+        {
+            score += 10;
+        }
+    }
+
+    return score;
+}
+
+static esp_err_t queryLocalBestMove(char bestMove[APP_MOVE_TEXT_LEN], const char * fen)
+{
+    int bestScore = -1000000;
+    uint8_t found = 0U;
+
+    (void)fen;
+
+    setMoveText(bestMove, "-----");
+
+    for (int lo = 0; lo < 8; lo++)
+    {
+        for (int co = 0; co < 8; co++)
+        {
+            if ((tabuleiro[lo][co].tipo == VAZIO) ||
+                (tabuleiro[lo][co].cor != turno_atual))
+            {
+                continue;
+            }
+
+            for (int ld = 0; ld < 8; ld++)
+            {
+                for (int cd = 0; cd < 8; cd++)
+                {
+                    if (validar_movimento(lo, co, ld, cd) &&
+                        rei_salvo(lo, co, ld, cd))
+                    {
+                        int score = localMoveScore(lo, co, ld, cd);
+
+                        if ((found == 0U) || (score > bestScore))
+                        {
+                            bestScore = score;
+                            found = 1U;
+
+                            bestMove[0] = (char)('a' + co);
+                            bestMove[1] = (char)('8' - lo);
+                            bestMove[2] = (char)('a' + cd);
+                            bestMove[3] = (char)('8' - ld);
+                            bestMove[4] = '\0';
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return (found != 0U) ? ESP_OK : ESP_FAIL;
+}
+
 static void buildOriginHintLedCommand(uint32_t sequence,
                                       const char square[APP_SQUARE_TEXT_LEN],
                                       led_command_t * command);
@@ -632,162 +720,12 @@ static void updateState(const char * fen, const char * piece, const char * best,
     }
 }
 
-static esp_err_t buildLichessUrl(const char * fen, char * url, size_t urlLen)
-{
-    size_t outIndex = 0U;
-    esp_err_t err = ESP_ERR_INVALID_ARG;
-
-    if ((fen == NULL) || (url == NULL) || (urlLen == 0U)) return err;
-
-    outIndex = (size_t)snprintf(url, urlLen, "%s", LICHESS_CLOUD_EVAL_URL);
-
-    for (size_t i = 0U; fen[i] != '\0'; i++)
-    {
-        char c = fen[i];
-        int written = 0;
-
-        if (c == ' ') written = snprintf(&url[outIndex], urlLen - outIndex, "%%20");
-        else if (c == '/') written = snprintf(&url[outIndex], urlLen - outIndex, "%%2F");
-        else
-        {
-            if (outIndex + 1U >= urlLen) return ESP_ERR_INVALID_SIZE;
-            url[outIndex++] = c;
-            written = 1;
-        }
-        if (written <= 0) return ESP_ERR_INVALID_SIZE;
-        outIndex += (size_t)written;
-    }
-
-    if (outIndex + strlen(LICHESS_URL_SUFFIX) >= urlLen) return ESP_ERR_INVALID_SIZE;
-
-    (void)strcpy(&url[outIndex], LICHESS_URL_SUFFIX);
-    return ESP_OK;
-}
-
-static esp_err_t httpsGet(const char * url, char * response, size_t responseLen)
-{
-    esp_err_t err = ESP_FAIL;
-    esp_http_client_handle_t client = NULL;
-    int readLen = 0;
-    int statusCode = 0;
-
-    esp_http_client_config_t config = {
-        .url = url,
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = 15000,
-        .crt_bundle_attach = esp_crt_bundle_attach
-    };
-
-    if ((url == NULL) || (response == NULL) || (responseLen == 0U)) return ESP_ERR_INVALID_ARG;
-
-    response[0] = '\0';
-    client = esp_http_client_init(&config);
-    if (client == NULL) return ESP_FAIL;
-
-    err = esp_http_client_open(client, 0);
-    if (err == ESP_OK)
-    {
-        (void)esp_http_client_fetch_headers(client);
-        statusCode = esp_http_client_get_status_code(client);
-        readLen = esp_http_client_read_response(client, response, (int)(responseLen - 1U));
-
-        if (readLen >= 0)
-        {
-            response[readLen] = '\0';
-            if (statusCode == 200) err = ESP_OK;
-            else err = ESP_FAIL;
-        }
-        else err = ESP_FAIL;
-    }
-
-    (void)esp_http_client_close(client);
-    (void)esp_http_client_cleanup(client);
-    return err;
-}
-
-static uint8_t parseBestMoveFromJson(const char * json, char bestMove[APP_MOVE_TEXT_LEN])
-{
-    uint8_t found = 0U;
-    size_t i = 0U;
-    static const char key[] = "\"moves\"";
-
-    if ((json == NULL) || (bestMove == NULL)) return found;
-
-    setMoveText(bestMove, "-----");
-
-    while (json[i] != '\0')
-    {
-        size_t j = 0U;
-        while ((key[j] != '\0') && (json[i + j] == key[j])) j++;
-
-        if (key[j] == '\0')
-        {
-            size_t k = 0U;
-            i += j;
-            while ((json[i] != '\0') && (json[i] != ':')) i++;
-            if (json[i] == ':') i++;
-            while ((json[i] == ' ') || (json[i] == '\t')) i++;
-            if (json[i] == '"') i++;
-
-            while ((json[i] != '\0') && (json[i] != ' ') && (json[i] != '"') && (k < (APP_MOVE_TEXT_LEN - 1U)))
-            {
-                bestMove[k++] = json[i++];
-            }
-            bestMove[k] = '\0';
-
-            if ((k >= 4U) &&
-                (bestMove[0] >= 'a') && (bestMove[0] <= 'h') &&
-                (bestMove[1] >= '1') && (bestMove[1] <= '8') &&
-                (bestMove[2] >= 'a') && (bestMove[2] <= 'h') &&
-                (bestMove[3] >= '1') && (bestMove[3] <= '8'))
-            {
-                found = 1U;
-            }
-            break;
-        }
-        i++;
-    }
-    return found;
-}
-
-static esp_err_t queryLichessBestMove(char bestMove[APP_MOVE_TEXT_LEN], const char * fen)
-{
-    char url[HTTPS_URL_LEN];
-    char response[HTTPS_RESPONSE_LEN];
-    esp_err_t err;
-
-    setMoveText(bestMove, "-----");
-
-    if (wifiConnected == 0U)
-    {
-        ESP_LOGW(TAG, "Sem internet para consultar Lichess");
-        return ESP_ERR_WIFI_NOT_CONNECT;
-    }
-
-    err = buildLichessUrl(fen, url, sizeof(url));
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(TAG, "Lichess URL: %s", url);
-        err = httpsGet(url, response, sizeof(response));
-    }
-
-    if (err == ESP_OK)
-    {
-        if (parseBestMoveFromJson(response, bestMove) == 0U)
-        {
-            ESP_LOGE(TAG, "Nao foi possivel parsear melhor jogada");
-            err = ESP_FAIL;
-        }
-    }
-    return err;
-}
-
 static void buildOriginHintLedCommand(uint32_t sequence, const char square[APP_SQUARE_TEXT_LEN], led_command_t * command)
 {
     if (command != NULL)
     {
+        memset(command, 0, sizeof(*command));
         command->sequence = sequence;
-        command->clear = 0U;
         command->bestValid = 0U;
         command->legalCount = 1U;
         copyText(command->legal[0], APP_SQUARE_TEXT_LEN, square);
@@ -800,8 +738,8 @@ static void buildBestMoveLedCommand(uint32_t sequence, const char bestMove[APP_M
 {
     if (command != NULL)
     {
+        memset(command, 0, sizeof(*command));
         command->sequence = sequence;
-        command->clear = 0U;
         command->legalCount = 0U;
 
         if ((bestMove[0] >= 'a') && (bestMove[0] <= 'h') &&
@@ -902,12 +840,8 @@ void serverTask(void * parameters)
                 ESP_LOGI(TAG, "FEN Atualizada: %s", fenAtual);
 
                 setMoveText(bestMove, "-----");
-
-                if (wifiConnected != 0U)
-                {
-                    err = queryLichessBestMove(bestMove, fenAtual);
-                    if (err != ESP_OK) ESP_LOGW(TAG, "Consulta Lichess falhou: %ld", (long)err);
-                }
+                err = queryLocalBestMove(bestMove, fenAtual);
+                if (err != ESP_OK) ESP_LOGW(TAG, "Motor local falhou: %ld", (long)err);
 
                 // Acende verde pra melhor jogada do Lichess
                 buildBestMoveLedCommand(event.sequence, bestMove, &command);

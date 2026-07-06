@@ -1,0 +1,66 @@
+# ESP-IDF build output
+build/
+managed_components/
+dependencies.lock
+
+# ESP-IDF generated files
+sdkconfig.old
+sdkconfig.defaults.old
+size.json
+flasher_args.json
+flash_args
+bootloader-flash_args
+partition-table-flash_args
+
+# Local configuration and credentials
+.env
+.env.*
+*.secret
+*.secrets
+secrets/
+credentials/
+wifi_credentials.h
+main/wifi_credentials.h
+main/private_config.h
+
+# Logs and monitor output
+*.log
+logs/
+monitor.log
+idf_py_stdout_output_*
+idf_py_stderr_output_*
+
+# C/C++ temporary files
+*.o
+*.obj
+*.a
+*.so
+*.d
+*.elf
+*.bin
+*.map
+*.lst
+*.su
+*.gcda
+*.gcno
+*.gcov
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local backups
+*_backup_*/
+backup/
+backups/

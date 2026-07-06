@@ -13,7 +13,7 @@
 #include "led.h"
 #include "led_strip.h"
 
-#define LED_STRIP_GPIO              (20)
+#define LED_STRIP_GPIO              (38)
 #define USED_BOARD_LED_COUNT        (64U)
 #define SKIP_BETWEEN_FILES         (5U)
 #define PHYSICAL_FILE_STRIDE        (13U)

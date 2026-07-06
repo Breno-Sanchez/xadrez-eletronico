@@ -23,6 +23,7 @@ typedef struct
 typedef struct
 {
     uint32_t sequence;
+    uint8_t clear;
 
     uint8_t helpEnabled;
     uint8_t blinkActive;
