@@ -63,3 +63,7 @@ __pycache__/
 *_backup_*/
 backup/
 backups/
+*.bak
+*.bak-*
+*.orig
+*.tmp
