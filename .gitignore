@@ -67,3 +67,19 @@ backups/
 *.bak-*
 *.orig
 *.tmp
+# ESP-IDF generated output
+/build/
+/managed_components/
+/sdkconfig.old
+# Host/editor noise
+.cache/
+# Local patch/archive residue
+/files/
+apply_*.py
+*.zip
+
+# Host helper binaries
+/tools/parse_led_map
+/tools/*.out
+# Xadrez runtime logs
+/logs/

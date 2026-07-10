@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <stdio.h>
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_err.h"
@@ -19,6 +18,7 @@
 
 #define FILE_COUNT                  (8U)
 #define RANK_COUNT                  (8U)
+#define MAP_NO_CHAR                 (-1)
 
 static const char * const TAG = "LED_MAP";
 static led_strip_handle_t ledStrip = NULL;
@@ -131,7 +131,7 @@ static int readCommandChar(void)
         return (int)ch;
     }
 
-    return EOF;
+    return MAP_NO_CHAR;
 }
 
 static void getSquare(uint32_t squareIndex, char square[3])
@@ -150,16 +150,15 @@ static void printStatus(uint32_t squareIndex, uint32_t ledIndex)
 
     getSquare(squareIndex, square);
 
-    printf("\n");
-    printf("============================================================\n");
-    printf("Mapping square: %s\n", square);
-    printf("Testing LED index: %lu\n", (unsigned long)ledIndex);
-    printf("a = accept this LED for this square\n");
-    printf("r = reject and test next LED\n");
-    printf("b = go back one LED\n");
-    printf("q = quit, then press Ctrl+] to close monitor\n");
-    printf("============================================================\n");
-    fflush(stdout);
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "============================================================");
+    ESP_LOGI(TAG, "Mapping square: %s", square);
+    ESP_LOGI(TAG, "Testing LED index: %lu", (unsigned long)ledIndex);
+    ESP_LOGI(TAG, "a = accept this LED for this square");
+    ESP_LOGI(TAG, "r = reject and test next LED");
+    ESP_LOGI(TAG, "b = go back one LED");
+    ESP_LOGI(TAG, "q = quit, then press Ctrl+] to close monitor");
+    ESP_LOGI(TAG, "============================================================");
 }
 
 void app_main(void)
@@ -168,7 +167,6 @@ void app_main(void)
     uint32_t ledIndex = 0U;
     char square[3];
 
-    setvbuf(stdout, NULL, _IONBF, 0);
 
     esp_err_t err = ledMapInit();
 
@@ -196,7 +194,7 @@ void app_main(void)
     {
         int ch = readCommandChar();
 
-        if (ch == EOF)
+        if (ch == MAP_NO_CHAR)
         {
             vTaskDelay(pdMS_TO_TICKS(20U));
             continue;
@@ -210,26 +208,23 @@ void app_main(void)
         if (ch == 'a')
         {
             getSquare(squareIndex, square);
-            printf("MAP_ACCEPT %s %lu\n", square, (unsigned long)ledIndex);
-            fflush(stdout);
-
+            ESP_LOGI(TAG, "MAP_ACCEPT %s %lu", square, (unsigned long)ledIndex);
+        
             squareIndex++;
             ledIndex++;
 
             if (squareIndex >= (FILE_COUNT * RANK_COUNT))
             {
-                printf("MAP_DONE\n");
-                fflush(stdout);
-                (void)clearAll();
+                ESP_LOGI(TAG, "MAP_DONE");
+                            (void)clearAll();
                 continue;
             }
         }
         else if (ch == 'r')
         {
             ledIndex++;
-            printf("MAP_REJECT next LED %lu\n", (unsigned long)ledIndex);
-            fflush(stdout);
-        }
+            ESP_LOGI(TAG, "MAP_REJECT next LED %lu", (unsigned long)ledIndex);
+                }
         else if (ch == 'b')
         {
             if (ledIndex > 0U)
@@ -237,28 +232,24 @@ void app_main(void)
                 ledIndex--;
             }
 
-            printf("MAP_BACK LED %lu\n", (unsigned long)ledIndex);
-            fflush(stdout);
-        }
+            ESP_LOGI(TAG, "MAP_BACK LED %lu", (unsigned long)ledIndex);
+                }
         else if (ch == 'q')
         {
-            printf("MAP_DONE\n");
-            fflush(stdout);
-            (void)clearAll();
+            ESP_LOGI(TAG, "MAP_DONE");
+                    (void)clearAll();
             continue;
         }
         else
         {
-            printf("Invalid input. Use a, r, b, or q.\n");
-            fflush(stdout);
-            continue;
+            ESP_LOGW(TAG, "Invalid input. Use a, r, b, or q.");
+                    continue;
         }
 
         if (ledIndex >= LED_STRIP_LED_COUNT)
         {
-            printf("MAP_DONE_REACHED_LED_LIMIT\n");
-            fflush(stdout);
-            (void)clearAll();
+            ESP_LOGW(TAG, "MAP_DONE_REACHED_LED_LIMIT");
+                    (void)clearAll();
             continue;
         }
 

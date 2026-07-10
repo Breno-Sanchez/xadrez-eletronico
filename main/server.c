@@ -22,10 +22,10 @@
 #include "nvs_flash.h"
 #include "server.h"
 
-#define WIFI_SSID_TXT              "UTFPR-ALUNO"
-#define EAP_IDENTITY_TXT           "a2342774"
-#define EAP_USERNAME_TXT           "a2342774"
-#define EAP_PASSWORD_TXT           "mrmugu14"
+#define WIFI_SSID_TXT              "PROVISION_WITH_RUN_CHESS"
+#define EAP_IDENTITY_TXT           "PROVISION_WITH_RUN_CHESS"
+#define EAP_USERNAME_TXT           "PROVISION_WITH_RUN_CHESS"
+#define EAP_PASSWORD_TXT           "PROVISION_WITH_RUN_CHESS"
 #define SOFTAP_SSID_TXT            "XADREZ_ESP"
 #define SOFTAP_PASS_TXT            "xadrez12345"
 #define SOFTAP_CHANNEL             (1U)
@@ -46,13 +46,15 @@ typedef enum
     GAME_MODE_PROMOTION_PENDING,
     GAME_MODE_INVALID_LOCK,
     GAME_MODE_SYNC_WAIT,
-    GAME_MODE_CHECKMATE_LOCK
+    GAME_MODE_CHECKMATE_LOCK,
+    GAME_MODE_DRAW_LOCK
 } game_mode_t;
 
 typedef enum
 {
     GAME_COMMAND_START = 0,
-    GAME_COMMAND_PROMOTE
+    GAME_COMMAND_PROMOTE,
+    GAME_COMMAND_DRAW
 } game_command_type_t;
 
 typedef struct
@@ -88,6 +90,8 @@ static char stateText[STATE_TEXT_LEN] = "SETUP";
 static char stateLegal[LEGAL_TEXT_LEN] = "-";
 static char stateBest[APP_MOVE_TEXT_LEN] = "-----";
 static uint8_t winnerWhite = 0U;
+static uint8_t whiteInfractions = 0U;
+static uint8_t blackInfractions = 0U;
 static uint32_t ledSequence = 1U;
 static uint8_t orientationKnown = 0U;
 static uint8_t orientationFlipRanks = 0U;
@@ -108,6 +112,7 @@ static void virtualIndexToPhysicalSquare(uint8_t row, uint8_t col, char square[A
 static void setVirtualBit(uint8_t map[APP_BOARD_RANK_COUNT], uint8_t row, uint8_t col);
 static bool selectOrientationForLift(const char square[APP_SQUARE_TEXT_LEN], uint8_t * row, uint8_t * col, chess_piece_t * piece);
 static void startGame(void);
+static void declareDraw(void);
 static void handleSensorEvent(const sensor_event_t * event);
 static void handleGameCommand(const game_command_t * command);
 static void processPendingCommands(void);
@@ -117,6 +122,12 @@ static chess_piece_type_t selectorPromotionPiece(const char square[APP_SQUARE_TE
 static void updateCheckState(void);
 static void updateLegalTextFromMap(void);
 static const char * modeToText(game_mode_t mode);
+static const char * orientationText(void);
+static const char * sensorStateText(sensor_piece_state_t state);
+static const char * pieceTypeText(chess_piece_type_t type);
+static const char * pieceColorText(chess_color_t color);
+static void indexToText(uint8_t row, uint8_t col, char out[APP_SQUARE_TEXT_LEN]);
+static void logBoardEvent(const sensor_event_t * event);
 
 static esp_err_t initNvs(void);
 static esp_err_t initEnterpriseAuth(void);
@@ -126,12 +137,14 @@ static esp_err_t rootHandler(httpd_req_t * req);
 static esp_err_t apiStateHandler(httpd_req_t * req);
 static esp_err_t apiStartHandler(httpd_req_t * req);
 static esp_err_t apiPromoteHandler(httpd_req_t * req);
+static esp_err_t apiDrawHandler(httpd_req_t * req);
 
 static const httpd_uri_t rootUri = {
  .uri = "/", .method = HTTP_GET, .handler = rootHandler, .user_ctx = NULL };
 static const httpd_uri_t stateUri = { .uri = "/api/state", .method = HTTP_GET, .handler = apiStateHandler, .user_ctx = NULL };
 static const httpd_uri_t startUri = { .uri = "/api/start", .method = HTTP_POST, .handler = apiStartHandler, .user_ctx = NULL };
 static const httpd_uri_t promoteUri = { .uri = "/api/promote", .method = HTTP_POST, .handler = apiPromoteHandler, .user_ctx = NULL };
+static const httpd_uri_t drawUri = { .uri = "/api/draw", .method = HTTP_POST, .handler = apiDrawHandler, .user_ctx = NULL };
 
 static size_t boundedStringLength(const char * text, size_t maxLen)
 {
@@ -162,10 +175,30 @@ static void copyStringToU8(uint8_t * dst, size_t dstLen, const char * src)
 
 static void setMode(game_mode_t mode, const char * text)
 {
+    game_mode_t oldMode = gameMode;
+    char oldText[STATE_TEXT_LEN];
+
+    (void)snprintf(oldText, sizeof(oldText), "%s", stateText);
+
     gameMode = mode;
     if (text != NULL)
     {
         (void)snprintf(stateText, sizeof(stateText), "%s", text);
+    }
+
+    if ((oldMode != gameMode) || (strcmp(oldText, stateText) != 0))
+    {
+        ESP_LOGI(
+            TAG,
+            "STATE mode=%s->%s state=%s turn=%s orientation=%s selected=%s fen=%s",
+            modeToText(oldMode),
+            modeToText(gameMode),
+            stateText,
+            pieceColorText(game.side_to_move),
+            orientationText(),
+            (selectedValid != 0U) ? selectedSquare : "-",
+            game.fen
+        );
     }
 }
 
@@ -180,9 +213,137 @@ static const char * modeToText(game_mode_t mode)
         case GAME_MODE_INVALID_LOCK: return "INVALID_LOCK";
         case GAME_MODE_SYNC_WAIT: return "SYNC_WAIT";
         case GAME_MODE_CHECKMATE_LOCK: return "CHECKMATE";
+        case GAME_MODE_DRAW_LOCK: return "DRAW";
         default: return "UNKNOWN";
     }
 }
+
+static const char * orientationText(void)
+{
+    const char * text = "unassigned";
+
+    if (orientationKnown != 0U)
+    {
+        text = (orientationFlipRanks != 0U) ? "flipped" : "normal";
+    }
+
+    return text;
+}
+
+static const char * sensorStateText(sensor_piece_state_t state)
+{
+    const char * text = "UNKNOWN";
+
+    if (state == SENSOR_STATE_PRESENT)
+    {
+        text = "PRESENT";
+    }
+    else if (state == SENSOR_STATE_LIFTED)
+    {
+        text = "REMOVED";
+    }
+
+    return text;
+}
+
+static const char * pieceTypeText(chess_piece_type_t type)
+{
+    const char * text = "UNKNOWN";
+
+    switch (type)
+    {
+        case CHESS_EMPTY:
+            text = "EMPTY";
+            break;
+
+        case CHESS_PAWN:
+            text = "PAWN";
+            break;
+
+        case CHESS_KNIGHT:
+            text = "KNIGHT";
+            break;
+
+        case CHESS_BISHOP:
+            text = "BISHOP";
+            break;
+
+        case CHESS_ROOK:
+            text = "ROOK";
+            break;
+
+        case CHESS_QUEEN:
+            text = "QUEEN";
+            break;
+
+        case CHESS_KING:
+            text = "KING";
+            break;
+
+        default:
+            text = "UNKNOWN";
+            break;
+    }
+
+    return text;
+}
+
+static const char * pieceColorText(chess_color_t color)
+{
+    const char * text = "none";
+
+    if (color == CHESS_WHITE)
+    {
+        text = "white";
+    }
+    else if (color == CHESS_BLACK)
+    {
+        text = "black";
+    }
+
+    return text;
+}
+
+static void indexToText(uint8_t row, uint8_t col, char out[APP_SQUARE_TEXT_LEN])
+{
+    if (out == NULL)
+    {
+        return;
+    }
+
+    if ((row < APP_BOARD_RANK_COUNT) && (col < APP_BOARD_FILE_COUNT))
+    {
+        chess_index_to_square(row, col, out);
+    }
+    else
+    {
+        out[0] = '?';
+        out[1] = '?';
+        out[2] = '\0';
+    }
+}
+
+static void logBoardEvent(const sensor_event_t * event)
+{
+    if (event == NULL)
+    {
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "EVENT seq=%lu physical=%s state=%s mode=%s turn=%s orientation=%s selected=%s fen=%s",
+        (unsigned long)event->sequence,
+        event->square,
+        sensorStateText(event->state),
+        modeToText(gameMode),
+        pieceColorText(game.side_to_move),
+        orientationText(),
+        (selectedValid != 0U) ? selectedSquare : "-",
+        game.fen
+    );
+}
+
 
 static void setBit(uint8_t map[APP_BOARD_RANK_COUNT], const char square[APP_SQUARE_TEXT_LEN])
 {
@@ -429,6 +590,23 @@ static void sendLedFrame(uint8_t rainbowActive)
     (void)memcpy(command.check, checkMap, sizeof(command.check));
     (void)snprintf(command.blinkSquare, sizeof(command.blinkSquare), "%s", selectedSquare);
 
+
+    /* DRAW_LOCK_LED_FRAME */
+    if (gameMode == GAME_MODE_DRAW_LOCK)
+    {
+        for (uint8_t rank = 0U; rank < 8U; rank++)
+        {
+            command.legal[rank] = 0xFFU;
+            command.best[rank] = 0U;
+            command.invalid[rank] = 0U;
+            command.check[rank] = 0U;
+        }
+
+        command.blinkActive = 0U;
+        command.mateActive = 0U;
+        command.rainbowActive = 0U;
+    }
+
     rebuildOwnerMaps(&command);
 
     if (ledQueueRef != NULL)
@@ -566,24 +744,45 @@ static void updateCheckState(void)
     if ((chess_is_check(&game, game.side_to_move) == true) &&
         (chess_find_king(&game, game.side_to_move, &row, &col) == true))
     {
+        setVirtualBit(checkMap, row, col);
+
         if (chess_is_checkmate(&game, game.side_to_move) == true)
         {
-            for (uint8_t i = 0U; i < 8U; i++)
-            {
-                setVirtualBit(checkMap, i, i);
-                setVirtualBit(checkMap, i, (uint8_t)(7U - i));
-            }
-
-            setVirtualBit(checkMap, row, col);
             winnerWhite = (game.side_to_move == CHESS_BLACK) ? 1U : 0U;
             setMode(GAME_MODE_CHECKMATE_LOCK, "CHECKMATE");
         }
-        else
-        {
-            setVirtualBit(checkMap, row, col);
-        }
     }
 }
+
+
+static void registerInfraction(const char * reason)
+{
+    uint8_t * counter;
+    const char * sideText;
+
+    counter = (game.side_to_move == CHESS_WHITE) ? &whiteInfractions : &blackInfractions;
+    sideText = (game.side_to_move == CHESS_WHITE) ? "white" : "black";
+
+    if (*counter < 2U)
+    {
+        (*counter)++;
+    }
+
+    ESP_LOGW(TAG, "Infraction %u/2 by %s side: %s", (unsigned int)(*counter), sideText, (reason != NULL) ? reason : "invalid move");
+
+    if (*counter >= 2U)
+    {
+        clearMaps();
+        (void)memset(checkMap, 0, sizeof(checkMap));
+        winnerWhite = (game.side_to_move == CHESS_BLACK) ? 1U : 0U;
+        selectedValid = 0U;
+        selectedSquare[0] = '\0';
+        pendingPromotionValid = 0U;
+        setMode(GAME_MODE_CHECKMATE_LOCK, "INFRACTION_LOSS");
+    }
+}
+
+
 
 
 static int pieceMaterialValue(chess_piece_type_t type)
@@ -768,6 +967,11 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
     uint8_t fromRow;
     uint8_t fromCol;
     chess_move_t move;
+    char fromText[APP_SQUARE_TEXT_LEN];
+    char toText[APP_SQUARE_TEXT_LEN];
+    char toPhysical[APP_SQUARE_TEXT_LEN];
+    chess_piece_t movingPiece;
+    chess_piece_t targetPiece;
 
     if ((selectedValid == 0U) || (physicalSquareToVirtualIndex(selectedSquare, &fromRow, &fromCol) == false))
     {
@@ -780,8 +984,29 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
     move.to_col = toCol;
     move.promotion = promotion;
 
+    indexToText(fromRow, fromCol, fromText);
+    indexToText(toRow, toCol, toText);
+    virtualIndexToPhysicalSquare(toRow, toCol, toPhysical);
+    movingPiece = chess_get_piece(&game, fromRow, fromCol);
+    targetPiece = chess_get_piece(&game, toRow, toCol);
+
+    ESP_LOGI(
+        TAG,
+        "MOVE_TRY physical=%s->%s virtual=%s->%s side=%s piece=%s target=%s/%s promotion=%s",
+        selectedSquare,
+        toPhysical,
+        fromText,
+        toText,
+        pieceColorText(game.side_to_move),
+        pieceTypeText(movingPiece.type),
+        pieceColorText(targetPiece.color),
+        pieceTypeText(targetPiece.type),
+        pieceTypeText(promotion)
+    );
+
     if (chess_is_legal_move(&game, &move) == false)
     {
+        ESP_LOGW(TAG, "MOVE_REJECT reason=RULE_ENGINE physical=%s->%s virtual=%s->%s fen=%s", selectedSquare, toPhysical, fromText, toText, game.fen);
         return false;
     }
 
@@ -803,6 +1028,7 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
 
     if (chess_apply_move(&game, &move) == false)
     {
+        ESP_LOGE(TAG, "MOVE_REJECT reason=APPLY_FAILED physical=%s->%s virtual=%s->%s fen=%s", selectedSquare, toPhysical, fromText, toText, game.fen);
         return false;
     }
 
@@ -810,6 +1036,8 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
     selectedSquare[0] = '\0';
     pendingPromotionValid = 0U;
     clearMaps();
+    ESP_LOGI(TAG, "MOVE_OK physical=%s->%s virtual=%s->%s fen=%s pgn=%s next=%s", selectedSquare, toPhysical, fromText, toText, game.fen, game.pgn, pieceColorText(game.side_to_move));
+
     updateCheckState();
 
     if (gameMode != GAME_MODE_CHECKMATE_LOCK)
@@ -836,6 +1064,8 @@ static void startGame(void)
     selectedSquare[0] = '\0';
     pendingPromotionValid = 0U;
     winnerWhite = 0U;
+    whiteInfractions = 0U;
+    blackInfractions = 0U;
     orientationKnown = 0U;
     orientationFlipRanks = 0U;
 
@@ -853,6 +1083,24 @@ static void startGame(void)
     vTaskDelay(pdMS_TO_TICKS(START_RAINBOW_MS));
     sendLedFrame(0U);
 }
+
+static void declareDraw(void)
+{
+    clearMaps();
+
+    for (uint8_t rank = 0U; rank < 8U; rank++)
+    {
+        legalMap[rank] = 0xFFU;
+    }
+
+    selectedValid = 0U;
+    selectedSquare[0] = '\0';
+    pendingPromotionValid = 0U;
+    winnerWhite = 0U;
+    setMode(GAME_MODE_DRAW_LOCK, "DRAW");
+    sendLedFrame(0U);
+}
+
 
 
 static void handleGameCommand(const game_command_t * command)
@@ -873,7 +1121,13 @@ static void handleGameCommand(const game_command_t * command)
         (void)applySelectedMove(pendingPromotionMove.to_row, pendingPromotionMove.to_col, command->promotion);
         sendLedFrame(0U);
     }
+
+    else if (command->type == GAME_COMMAND_DRAW)
+    {
+        declareDraw();
+    }
 }
+
 
 static void processPendingCommands(void)
 {
@@ -901,6 +1155,7 @@ static void handleSensorEvent(const sensor_event_t * event)
     }
 
     updatePhysical(event->square, (event->state == SENSOR_STATE_PRESENT) ? 1U : 0U);
+    logBoardEvent(event);
 
     if (gameMode == GAME_MODE_SETUP)
     {
@@ -909,7 +1164,7 @@ static void handleSensorEvent(const sensor_event_t * event)
         return;
     }
 
-    if (gameMode == GAME_MODE_CHECKMATE_LOCK)
+    if ((gameMode == GAME_MODE_CHECKMATE_LOCK) || (gameMode == GAME_MODE_DRAW_LOCK))
     {
         sendLedFrame(0U);
         return;
@@ -917,12 +1172,45 @@ static void handleSensorEvent(const sensor_event_t * event)
 
     if (gameMode == GAME_MODE_INVALID_LOCK)
     {
-        if (physicalMatchesBoard() == true)
+        if ((selectedValid != 0U) &&
+            (event->state == SENSOR_STATE_PRESENT) &&
+            (strcmp(event->square, selectedSquare) == 0))
         {
+            ESP_LOGI(TAG, "INVALID_RESTORED origin=%s", selectedSquare);
+            clearMaps();
+            selectedValid = 0U;
+            selectedSquare[0] = '\0';
+
+            if (chess_is_check(&game, game.side_to_move) == true)
+            {
+                updateCheckState();
+                if (gameMode != GAME_MODE_CHECKMATE_LOCK)
+                {
+                    setMode(GAME_MODE_RUNNING, "CHECK");
+                }
+            }
+            else
+            {
+                setMode(GAME_MODE_RUNNING, "RUNNING");
+            }
+        }
+        else if (physicalMatchesBoard() == true)
+        {
+            ESP_LOGI(TAG, "INVALID_RESTORED full_board_match");
             clearMaps();
             selectedValid = 0U;
             selectedSquare[0] = '\0';
             setMode(GAME_MODE_RUNNING, "RUNNING");
+        }
+        else
+        {
+            ESP_LOGW(
+                TAG,
+                "INVALID_WAIT_RESTORE selected_origin=%s current_event=%s state=%s",
+                (selectedValid != 0U) ? selectedSquare : "-",
+                event->square,
+                sensorStateText(event->state)
+            );
         }
 
         sendLedFrame(0U);
@@ -1027,13 +1315,23 @@ static void handleSensorEvent(const sensor_event_t * event)
         {
             setBit(invalidMap, selectedSquare);
             setBit(invalidMap, event->square);
-            setMode(GAME_MODE_INVALID_LOCK, "INVALID_SQUARE");
+            registerInfraction("INVALID_SQUARE");
+
+            if (gameMode != GAME_MODE_CHECKMATE_LOCK)
+            {
+                setMode(GAME_MODE_INVALID_LOCK, "INVALID_SQUARE");
+            }
         }
         else if (applySelectedMove(row, col, CHESS_EMPTY) == false)
         {
             setBit(invalidMap, selectedSquare);
             setBit(invalidMap, event->square);
-            setMode(GAME_MODE_INVALID_LOCK, "INVALID_MOVE");
+            registerInfraction("INVALID_MOVE");
+
+            if (gameMode != GAME_MODE_CHECKMATE_LOCK)
+            {
+                setMode(GAME_MODE_INVALID_LOCK, "INVALID_MOVE");
+            }
         }
     }
 
@@ -1214,6 +1512,7 @@ static esp_err_t startHttpServer(void)
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &rootUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stateUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &startUri);
+        if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &drawUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &promoteUri);
 
         if (err == ESP_OK)
@@ -1227,7 +1526,7 @@ static esp_err_t startHttpServer(void)
 
 static esp_err_t rootHandler(httpd_req_t * req)
 {
-    static const char html[] = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Xadrez ESP32-S3</title><style>\nbody{font-family:Arial,sans-serif;background:#10131a;color:#eee;margin:18px}.layout{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}.board{display:grid;grid-template-columns:repeat(8,64px);grid-template-rows:repeat(8,64px);border:5px solid #222;background:#222}.sq{width:64px;height:64px;display:flex;align-items:center;justify-content:center;font-size:36px;box-sizing:border-box;position:relative;font-weight:700}.light{background:#d9c09b;color:#111}.dark{background:#73543a;color:#111}.coord{position:absolute;right:4px;bottom:3px;font-size:11px;opacity:.72}.phys{box-shadow:inset 0 0 0 6px #285dff}.turn{box-shadow:inset 0 0 0 8px #4ba3ff}.setupok{background:#064ec9!important;color:#fff;box-shadow:inset 0 0 0 4px #8bbcff}.legal{background:#d8c52f!important;color:#111}.best{background:#0b9f39!important;color:#fff}.invalid,.check{background:#c01818!important;color:#fff;box-shadow:inset 0 0 0 5px #ffb0b0}.checkpulse{animation:pulseRed .8s infinite}.sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}@keyframes pulseRed{50%{background:#c01818;color:#fff}}button{font-size:20px;margin:4px;padding:10px 18px;border-radius:8px;border:0}.box{background:#1d2430;padding:12px;margin:8px 0;border-radius:8px;max-width:900px}.fen{font-family:monospace;word-break:break-all;font-size:14px}.legend span{display:inline-block;padding:5px 8px;margin:3px;border-radius:5px}.blue{background:#064ec9}.red{background:#c01818}.yellow{background:#d8c52f;color:#111}.green{background:#0b9f39}.warn{font-size:18px;color:#ffd37a}.score{display:grid;grid-template-columns:1fr 1fr;gap:8px}.score div{background:#141a24;border-radius:6px;padding:8px}.statusCheck{color:#ffb0b0;font-weight:700;font-size:20px}</style></head><body><h1>Xadrez f\u00edsico ESP32-S3</h1><div><button onclick=\"startGame()\">Start</button><button onclick=\"promote('Q')\">Queen</button><button onclick=\"promote('R')\">Rook</button><button onclick=\"promote('B')\">Bishop</button><button onclick=\"promote('N')\">Knight</button></div><div class=\"box legend\"><span class=\"blue\">Setup blue = correct piece</span><span class=\"red\">Red = wrong/check</span><span class=\"yellow\">Legal move</span><span class=\"green\">Best local move</span></div><div class=\"layout\"><div class=\"board\" id=\"board\"></div><div><div class=\"box\" id=\"info\"></div><div class=\"box score\" id=\"captures\"></div><div class=\"box\" id=\"setup\"></div><div class=\"box fen\" id=\"fen\"></div><div class=\"box fen\" id=\"pgn\"></div></div></div><script>\nconst pcs={P:'\u2659',N:'\u2658',B:'\u2657',R:'\u2656',Q:'\u2655',K:'\u2654',p:'\u265f',n:'\u265e',b:'\u265d',r:'\u265c',q:'\u265b',k:'\u265a'};function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}\nfunction virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8'){x+=parseInt(ch);}else{if(x===f)return pcs[ch]||'';x++;}}return '';}\nfunction setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}\nfunction hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}\nasync function update(){let s=await (await fetch('/api/state')).json();let b=document.getElementById('board');let isSetup=s.mode==='SETUP';let check=hasCheck(s);b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(check&&s.mode!=='CHECKMATE')c+=' checkpulse';if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;let text=isSetup?(phys?'\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));d.textContent=text;let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.mode==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';document.getElementById('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;document.getElementById('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'</div>';document.getElementById('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');document.getElementById('fen').textContent=s.fen;document.getElementById('pgn').textContent=s.pgn;}setInterval(update,500);update();</script></body></html>";
+    static const char html[] = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Xadrez ESP32-S3</title><style>\nbody{font-family:Arial,sans-serif;background:#10131a;color:#eee;margin:18px}.layout{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}.board{display:grid;grid-template-columns:repeat(8,64px);grid-template-rows:repeat(8,64px);border:5px solid #222;background:#222}.sq{width:64px;height:64px;display:flex;align-items:center;justify-content:center;font-size:36px;box-sizing:border-box;position:relative;font-weight:700}.light{background:#d9c09b;color:#111}.dark{background:#73543a;color:#111}.coord{position:absolute;right:4px;bottom:3px;font-size:11px;opacity:.72}.phys{box-shadow:inset 0 0 0 6px #285dff}.turn{box-shadow:inset 0 0 0 8px #4ba3ff}.setupok{background:#064ec9!important;color:#fff;box-shadow:inset 0 0 0 4px #8bbcff}.legal{background:#d8c52f!important;color:#111}.best{background:#0b9f39!important;color:#fff}.invalid,.check{background:#c01818!important;color:#fff;box-shadow:inset 0 0 0 5px #ffb0b0}.sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}button{font-size:20px;margin:4px;padding:10px 18px;border-radius:8px;border:0}.box{background:#1d2430;padding:12px;margin:8px 0;border-radius:8px;max-width:900px}.fen{font-family:monospace;word-break:break-all;font-size:14px}.legend span{display:inline-block;padding:5px 8px;margin:3px;border-radius:5px}.blue{background:#064ec9}.red{background:#c01818}.yellow{background:#d8c52f;color:#111}.green{background:#0b9f39}.warn{font-size:18px;color:#ffd37a}.score{display:grid;grid-template-columns:1fr 1fr;gap:8px}.score div{background:#141a24;border-radius:6px;padding:8px}.statusCheck{color:#ffb0b0;font-weight:700;font-size:20px}</style></head><body><h1>Xadrez f\u00edsico ESP32-S3</h1><div><button onclick=\"startGame()\">Start</button><button onclick=\"promote('Q')\">Queen</button><button onclick=\"promote('R')\">Rook</button><button onclick=\"promote('B')\">Bishop</button><button onclick=\"promote('N')\">Knight</button><button onclick=\"drawGame()\">Draw</button></div><div class=\"box legend\"><span class=\"blue\">Setup blue = correct piece</span><span class=\"red\">Red = wrong/check</span><span class=\"yellow\">Legal move</span><span class=\"green\">Best local move</span></div><div class=\"layout\"><div class=\"board\" id=\"board\"></div><div><div class=\"box\" id=\"info\"></div><div class=\"box score\" id=\"captures\"></div><div class=\"box\" id=\"setup\"></div><div class=\"box fen\" id=\"fen\"></div><div class=\"box fen\" id=\"pgn\"></div></div></div><script>\nconst pcs={P:'\u2659',N:'\u2658',B:'\u2657',R:'\u2656',Q:'\u2655',K:'\u2654',p:'\u265f',n:'\u265e',b:'\u265d',r:'\u265c',q:'\u265b',k:'\u265a'};function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}async function drawGame(){await fetch('/api/draw',{method:'POST'});update();}\nfunction virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8'){x+=parseInt(ch);}else{if(x===f)return pcs[ch]||'';x++;}}return '';}\nfunction setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}\nfunction hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}\nasync function update(){let s=await (await fetch('/api/state')).json();let b=document.getElementById('board');let isSetup=s.mode==='SETUP';let check=hasCheck(s);b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;let text=isSetup?(phys?'\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));d.textContent=text;let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.mode==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';document.getElementById('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;document.getElementById('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';document.getElementById('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');document.getElementById('fen').textContent=s.fen;document.getElementById('pgn').textContent=s.pgn;}setInterval(update,500);update();</script></body></html>";
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
@@ -1300,7 +1599,7 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
     (void)snprintf(
         chunk,
         sizeof(chunk),
-        "{\"mode\":\"%s\",\"state\":\"%s\",\"turn_text\":\"%s\",\"orientation\":\"%s\",\"fen\":\"%s\",\"pgn\":\"%s\",\"selected\":\"%s\",\"legal_text\":\"%s\",\"best_move\":\"%s\",\"white_captured\":\"%s\",\"black_captured\":\"%s\",\"white_score\":%u,\"black_score\":%u,\"physical\":%s,\"turn\":%s,\"legal\":%s,\"best\":%s,\"invalid\":%s,\"check\":%s,\"setup_expected\":%s}",
+        "{\"mode\":\"%s\",\"state\":\"%s\",\"turn_text\":\"%s\",\"orientation\":\"%s\",\"fen\":\"%s\",\"pgn\":\"%s\",\"selected\":\"%s\",\"legal_text\":\"%s\",\"best_move\":\"%s\",\"white_captured\":\"%s\",\"black_captured\":\"%s\",\"white_score\":%u,\"black_score\":%u,\"white_infractions\":%u,\"black_infractions\":%u,\"physical\":%s,\"turn\":%s,\"legal\":%s,\"best\":%s,\"invalid\":%s,\"check\":%s,\"setup_expected\":%s}",
         modeToText(gameMode),
         stateText,
         turnText,
@@ -1314,6 +1613,8 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
         capturedByBlack,
         (unsigned int)whiteScore,
         (unsigned int)blackScore,
+        (unsigned int)whiteInfractions,
+        (unsigned int)blackInfractions,
         physical,
         turn,
         legal,
@@ -1377,6 +1678,23 @@ static esp_err_t apiPromoteHandler(httpd_req_t * req)
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
+
+static esp_err_t apiDrawHandler(httpd_req_t * req)
+{
+    game_command_t command;
+
+    command.type = GAME_COMMAND_DRAW;
+    command.promotion = CHESS_EMPTY;
+
+    if (gameCommandQueue != NULL)
+    {
+        (void)xQueueSend(gameCommandQueue, &command, pdMS_TO_TICKS(200U));
+    }
+
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_sendstr(req, "OK");
+}
+
 
 void serverTask(void * parameters)
 {

@@ -39,4 +39,8 @@ echo
 
 script -q -f -c "idf.py -p $PORT monitor" "$LOG_FILE"
 
-python3 "$PROJECT_ROOT/scripts/parse_led_map.py" "$LOG_FILE"
+mkdir -p "$PROJECT_ROOT/build/tools"
+cc -std=c17 -Wall -Wextra -Werror -O2 \
+    -o "$PROJECT_ROOT/build/tools/parse_led_map" \
+    "$PROJECT_ROOT/tools/parse_led_map.c"
+"$PROJECT_ROOT/build/tools/parse_led_map" "$LOG_FILE"

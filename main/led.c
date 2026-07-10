@@ -42,6 +42,8 @@ static uint8_t hasCommand = 0U;
 static uint8_t blinkPhase = 1U;
 static uint8_t rainbowPhase = 0U;
 static uint8_t ledIntensity = 35U;
+static uint8_t checkFlashFrames = 0U;
+static uint8_t checkPreviouslyActive = 0U;
 
 static uint8_t scale(uint8_t value)
 {
@@ -199,11 +201,11 @@ static void renderMate(void)
 
     for (uint8_t rank = 0U; rank < 8U; rank++)
     {
-        uint8_t rankIsWinnerHalf = (((rank < 4U) && (winnerLower != 0U)) || ((rank >= 4U) && (winnerLower == 0U))) ? 1U : 0U;
+        uint8_t winnerHalf = (((rank < 4U) && (winnerLower != 0U)) || ((rank >= 4U) && (winnerLower == 0U))) ? 1U : 0U;
 
         for (uint8_t file = 0U; file < 8U; file++)
         {
-            if (rankIsWinnerHalf != 0U)
+            if (winnerHalf != 0U)
             {
                 (void)setSquareRgb(rank, file, GREEN_R, GREEN_G, GREEN_B);
             }
@@ -213,13 +215,8 @@ static void renderMate(void)
             }
         }
     }
-
-    for (uint8_t i = 0U; i < 8U; i++)
-    {
-        (void)setSquareRgb(i, i, RED_R, RED_G, RED_B);
-        (void)setSquareRgb(i, (uint8_t)(7U - i), RED_R, RED_G, RED_B);
-    }
 }
+
 
 
 static esp_err_t render(void)
@@ -246,6 +243,13 @@ static esp_err_t render(void)
 
     checkActive = mapHasAny(currentCommand.check);
 
+    if ((checkActive != 0U) && (checkPreviouslyActive == 0U))
+    {
+        checkFlashFrames = 2U;
+    }
+
+    checkPreviouslyActive = (checkActive != 0U) ? 1U : 0U;
+
     for (uint8_t rank = 0U; rank < 8U; rank++)
     {
         for (uint8_t file = 0U; file < 8U; file++)
@@ -269,17 +273,6 @@ static esp_err_t render(void)
         (void)setSquareText(currentCommand.blinkSquare, STRONG_BLUE_R, STRONG_BLUE_G, STRONG_BLUE_B);
     }
 
-    if ((checkActive != 0U) && (blinkPhase != 0U))
-    {
-        for (uint8_t rank = 0U; rank < 8U; rank++)
-        {
-            for (uint8_t file = 0U; file < 8U; file++)
-            {
-                (void)setSquareRgb(rank, file, RED_R, RED_G, RED_B);
-            }
-        }
-    }
-
     for (uint8_t rank = 0U; rank < 8U; rank++)
     {
         for (uint8_t file = 0U; file < 8U; file++)
@@ -287,13 +280,38 @@ static esp_err_t render(void)
             uint8_t bit = (uint8_t)(1U << file);
             if ((currentCommand.legal[rank] & bit) != 0U) (void)setSquareRgb(rank, file, YELLOW_R, YELLOW_G, YELLOW_B);
             if ((currentCommand.best[rank] & bit) != 0U) (void)setSquareRgb(rank, file, GREEN_R, GREEN_G, GREEN_B);
-            if ((currentCommand.check[rank] & bit) != 0U) (void)setSquareRgb(rank, file, RED_R, RED_G, RED_B);
             if ((currentCommand.invalid[rank] & bit) != 0U) (void)setSquareRgb(rank, file, RED_R, RED_G, RED_B);
+        }
+    }
+
+    if (checkFlashFrames != 0U)
+    {
+        if (checkFlashFrames == 2U)
+        {
+            for (uint8_t rank = 0U; rank < 8U; rank++)
+            {
+                for (uint8_t file = 0U; file < 8U; file++)
+                {
+                    (void)setSquareRgb(rank, file, RED_R, RED_G, RED_B);
+                }
+            }
+        }
+
+        checkFlashFrames--;
+    }
+
+    for (uint8_t rank = 0U; rank < 8U; rank++)
+    {
+        for (uint8_t file = 0U; file < 8U; file++)
+        {
+            uint8_t bit = (uint8_t)(1U << file);
+            if ((currentCommand.check[rank] & bit) != 0U) (void)setSquareRgb(rank, file, RED_R, RED_G, RED_B);
         }
     }
 
     return led_strip_refresh(ledStrip);
 }
+
 
 
 void led_atualizar_config(uint8_t intensidade, uint8_t r, uint8_t g, uint8_t b)
@@ -365,7 +383,7 @@ void ledTask(void * parameters)
             rainbowPhase = (uint8_t)(rainbowPhase + 9U);
 
             if ((hasCommand != 0U) &&
-                ((currentCommand.blinkActive != 0U) || (currentCommand.rainbowActive != 0U) || (currentCommand.mateActive != 0U)))
+                ((currentCommand.blinkActive != 0U) || (currentCommand.rainbowActive != 0U) || (currentCommand.mateActive != 0U) || (checkFlashFrames != 0U)))
             {
                 (void)render();
             }

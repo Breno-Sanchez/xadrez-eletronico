@@ -21,7 +21,7 @@ case "\${1:-}" in
         exit 2
         ;;
     *)
-        echo "Usage: run chess [build|clean-build|flash|monitor]"
+        echo "Usage: run chess [build|clean-build|flash|monitor] | run map"
         exit 2
         ;;
 esac
@@ -29,6 +29,7 @@ EOF
 
 chmod +x "$RUN_FILE"
 chmod +x "$PROJECT_ROOT/scripts/run-chess.sh"
+chmod +x "$PROJECT_ROOT/scripts/run-map.sh"
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
