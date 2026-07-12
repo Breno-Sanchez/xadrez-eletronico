@@ -1,0 +1,30 @@
+# Xadrez project configuration.
+# This file is embedded into the firmware and parsed in C at runtime.
+
+project_name: "Xadrez"
+target: "esp32s3"
+serial_port: "/dev/ttyACM0"
+
+softap_ssid: "XADREZ_ESP"
+softap_password: "xadrez12345"
+softap_channel: 1
+softap_max_connections: 2
+
+stockfish_enabled: true
+stockfish_url: "https://stockfish.online/api/s/v2.php"
+stockfish_depth: 10
+stockfish_timeout_ms: 3500
+stockfish_response_bytes: 1536
+
+led_gpio: 38
+led_physical_count: 150
+led_brightness_percent: 30
+
+led_empty_rgb: [0, 0, 0]
+led_piece_rgb: [0, 0, 18]
+led_lifted_rgb: [0, 0, 28]
+led_legal_rgb: [42, 32, 0]
+led_best_rgb: [0, 36, 0]
+led_invalid_rgb: [48, 0, 0]
+led_check_rgb: [48, 0, 0]
+led_draw_rgb: [42, 32, 0]

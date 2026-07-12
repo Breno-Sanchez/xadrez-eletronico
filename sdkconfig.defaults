@@ -1,0 +1,20 @@
+
+# HTTPS advisor support for StockfishOnline.
+
+# Keep the default single-app partition table. Do not use a project partitions.csv.
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+# CONFIG_PARTITION_TABLE_TWO_OTA is not set
+# CONFIG_PARTITION_TABLE_CUSTOM is not set
+CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_MD5=y
+
+# Build for size so the firmware fits the default 1 MB app partition.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# CONFIG_COMPILER_OPTIMIZATION_DEBUG is not set
+# CONFIG_COMPILER_OPTIMIZATION_PERF is not set
+
+# HTTPS support with smaller common CA bundle instead of the full bundle.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL is not set
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y

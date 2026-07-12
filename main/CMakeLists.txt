@@ -1,35 +1,38 @@
-if("$ENV{XADREZ_MAP_MODE}" STREQUAL "1")
-    idf_component_register(
-        SRCS
-            "src/tools/led_map_mode.c"
-        INCLUDE_DIRS
-            "include"
-            "."
-        PRIV_REQUIRES
-            led_strip
-            esp_driver_usb_serial_jtag
+if(DEFINED ENV{XADREZ_MAP_MODE})
+    set(XADREZ_MAIN_SRCS
+        "src/tools/led_map_mode.c"
+        "src/drivers/led.c"
     )
 else()
-    idf_component_register(
-        SRCS
-            "src/app/main.c"
-            "src/drivers/led.c"
-            "src/drivers/sensor.c"
-            "src/game/server.c"
-            "src/net/credentials.c"
-            "src/chess/chess_logic.c"
-            "src/chess/chess_engine.c"
-        INCLUDE_DIRS
-            "include"
-            "."
-        PRIV_REQUIRES
-            led_strip
-            esp_driver_gpio
-            esp_http_server
-            esp_wifi
-            esp_event
-            esp_netif
-            nvs_flash
-            wpa_supplicant
+    set(XADREZ_MAIN_SRCS
+        "src/app/main.c"
+        "src/app/project_config.c"
+        "src/chess/chess_logic.c"
+        "src/chess/chess_engine.c"
+        "src/drivers/led.c"
+        "src/drivers/sensor.c"
+        "src/game/server.c"
+        "src/net/credentials.c"
+        "src/net/stockfish_client.c"
     )
 endif()
+
+idf_component_register(
+    SRCS ${XADREZ_MAIN_SRCS}
+    INCLUDE_DIRS
+        "include"
+    EMBED_TXTFILES
+        "config.yaml"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_server
+        esp_http_client
+        esp-tls
+        esp_driver_gpio
+        esp_driver_rmt
+        nvs_flash
+        wpa_supplicant
+        espressif__led_strip
+)

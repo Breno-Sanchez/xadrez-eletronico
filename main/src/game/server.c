@@ -5,7 +5,6 @@
 #include <string.h>
 
 #include "app_types.h"
-#include "chess_engine.h"
 #include "chess_logic.h"
 #include "credentials.h"
 #include "esp_eap_client.h"
@@ -22,14 +21,12 @@
 #include "led.h"
 #include "nvs_flash.h"
 #include "server.h"
+#include "stockfish_client.h"
 
-<<<<<<< Updated upstream:main/server.c
 #define WIFI_SSID_TXT              "PROVISION_WITH_RUN_CHESS"
 #define EAP_IDENTITY_TXT           "PROVISION_WITH_RUN_CHESS"
 #define EAP_USERNAME_TXT           "PROVISION_WITH_RUN_CHESS"
 #define EAP_PASSWORD_TXT           "PROVISION_WITH_RUN_CHESS"
-=======
->>>>>>> Stashed changes:main/src/game/server.c
 #define SOFTAP_SSID_TXT            "XADREZ_ESP"
 #define SOFTAP_PASS_TXT            "xadrez12345"
 #define SOFTAP_CHANNEL             (1U)
@@ -41,6 +38,11 @@
 #define HTTP_CHUNK_LEN             (768U)
 #define GAME_COMMAND_QUEUE_LEN     (8U)
 #define START_RAINBOW_MS           (700U)
+#define STOCKFISH_REQUEST_QUEUE_LEN  (1U)
+#define STOCKFISH_RESPONSE_QUEUE_LEN (1U)
+#define STOCKFISH_TASK_STACK_BYTES   (16384U)
+#define STOCKFISH_TASK_PRIORITY      (2U)
+#define SERVER_STACK_WORD_COUNT(bytes_) (((bytes_) + sizeof(StackType_t) - 1U) / sizeof(StackType_t))
 #define CAPTURED_PIECE_SLOT_COUNT  (7U)
 
 typedef enum
@@ -68,11 +70,26 @@ typedef struct
     chess_piece_type_t promotion;
 } game_command_t;
 
+typedef struct
+{
+    uint32_t requestId;
+    char fen[CHESS_FEN_LEN];
+} stockfish_request_t;
+
+typedef struct
+{
+    uint32_t requestId;
+    char fen[CHESS_FEN_LEN];
+    stockfish_client_result_t result;
+} stockfish_response_t;
+
 static const char * const TAG = "SERVER";
 
 static QueueHandle_t sensorQueueRef = NULL;
 static QueueHandle_t ledQueueRef = NULL;
 static QueueHandle_t gameCommandQueue = NULL;
+static QueueHandle_t stockfishRequestQueue = NULL;
+static QueueHandle_t stockfishResponseQueue = NULL;
 static SemaphoreHandle_t stateMutex = NULL;
 static httpd_handle_t httpServer = NULL;
 static uint8_t wifiConnected = 0U;
@@ -81,6 +98,14 @@ static uint8_t enterpriseCredentialsReady = 0U;
 
 static StaticQueue_t gameCommandQueueControl;
 static uint8_t gameCommandQueueStorage[GAME_COMMAND_QUEUE_LEN * sizeof(game_command_t)];
+
+static StaticQueue_t stockfishRequestQueueControl;
+static StaticQueue_t stockfishResponseQueueControl;
+static uint8_t stockfishRequestQueueStorage[STOCKFISH_REQUEST_QUEUE_LEN * sizeof(stockfish_request_t)];
+static uint8_t stockfishResponseQueueStorage[STOCKFISH_RESPONSE_QUEUE_LEN * sizeof(stockfish_response_t)];
+static StackType_t stockfishTaskStack[SERVER_STACK_WORD_COUNT(STOCKFISH_TASK_STACK_BYTES)];
+static StaticTask_t stockfishTaskControlBlock;
+static TaskHandle_t stockfishTaskHandle = NULL;
 
 static chess_game_t game;
 static game_mode_t gameMode = GAME_MODE_SETUP;
@@ -104,6 +129,11 @@ static uint8_t capturedByBlackCounts[CAPTURED_PIECE_SLOT_COUNT] = {0U};
 static uint32_t ledSequence = 1U;
 static uint8_t orientationKnown = 0U;
 static uint8_t orientationFlipRanks = 0U;
+static uint32_t stockfishRequestSequence = 0U;
+static uint8_t stockfishBestValid = 0U;
+static char stockfishBestFen[CHESS_FEN_LEN] = "";
+static char stockfishBestMove[APP_MOVE_TEXT_LEN] = "";
+static char stateStockfishJson[STOCKFISH_CLIENT_JSON_TEXT_LEN] = "";
 
 static size_t boundedStringLength(const char * text, size_t maxLen);
 static void copyStringToU8(uint8_t * dst, size_t dstLen, const char * src);
@@ -125,6 +155,12 @@ static void declareDraw(void);
 static void handleSensorEvent(const sensor_event_t * event);
 static void handleGameCommand(const game_command_t * command);
 static void processPendingCommands(void);
+static void stockfishTask(void * parameters);
+static void processStockfishResponses(void);
+static void requestStockfishBestAsync(void);
+static void refreshStockfishBestMap(void);
+static void clearStockfishBest(void);
+static bool isStockfishMoveText(const char * text);
 static void computeLiftHints(uint8_t row, uint8_t col);
 static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t promotion);
 static chess_piece_type_t selectorPromotionPiece(const char square[APP_SQUARE_TEXT_LEN]);
@@ -146,6 +182,7 @@ static void eventHandler(void * arg, esp_event_base_t base, int32_t id, void * d
 static esp_err_t startHttpServer(void);
 static esp_err_t rootHandler(httpd_req_t * req);
 static esp_err_t apiStateHandler(httpd_req_t * req);
+static esp_err_t apiStockfishHandler(httpd_req_t * req);
 static esp_err_t apiStartHandler(httpd_req_t * req);
 static esp_err_t apiPromoteHandler(httpd_req_t * req);
 static esp_err_t apiDrawHandler(httpd_req_t * req);
@@ -153,6 +190,7 @@ static esp_err_t apiDrawHandler(httpd_req_t * req);
 static const httpd_uri_t rootUri = {
  .uri = "/", .method = HTTP_GET, .handler = rootHandler, .user_ctx = NULL };
 static const httpd_uri_t stateUri = { .uri = "/api/state", .method = HTTP_GET, .handler = apiStateHandler, .user_ctx = NULL };
+static const httpd_uri_t stockfishUri = { .uri = "/api/stockfish", .method = HTTP_GET, .handler = apiStockfishHandler, .user_ctx = NULL };
 static const httpd_uri_t startUri = { .uri = "/api/start", .method = HTTP_POST, .handler = apiStartHandler, .user_ctx = NULL };
 static const httpd_uri_t promoteUri = { .uri = "/api/promote", .method = HTTP_POST, .handler = apiPromoteHandler, .user_ctx = NULL };
 static const httpd_uri_t drawUri = { .uri = "/api/draw", .method = HTTP_POST, .handler = apiDrawHandler, .user_ctx = NULL };
@@ -622,7 +660,7 @@ static void sendLedFrame(uint8_t rainbowActive)
 
     if (ledQueueRef != NULL)
     {
-        (void)xQueueSend(ledQueueRef, &command, portMAX_DELAY);
+        (void)xQueueSend(ledQueueRef, &command, pdMS_TO_TICKS(20U));
     }
 }
 
@@ -978,15 +1016,204 @@ static void buildCapturedMaterialText(chess_color_t capturingSide, char * dst, s
 }
 
 
+
+static bool isStockfishMoveText(const char * text)
+{
+    bool ok = false;
+
+    if (text != NULL)
+    {
+        ok = ((text[0] >= 'a') && (text[0] <= 'h') &&
+              (text[1] >= '1') && (text[1] <= '8') &&
+              (text[2] >= 'a') && (text[2] <= 'h') &&
+              (text[3] >= '1') && (text[3] <= '8'));
+    }
+
+    return ok;
+}
+
+static void clearStockfishBest(void)
+{
+    stockfishBestValid = 0U;
+    stockfishBestFen[0] = '\0';
+    stockfishBestMove[0] = '\0';
+    stateStockfishJson[0] = '\0';
+    (void)memset(bestMap, 0, sizeof(bestMap));
+    (void)snprintf(stateBest, sizeof(stateBest), "-----");
+}
+
+static void refreshStockfishBestMap(void)
+{
+    char from[APP_SQUARE_TEXT_LEN];
+    char to[APP_SQUARE_TEXT_LEN];
+    uint8_t fromRow;
+    uint8_t fromCol;
+    uint8_t toRow;
+    uint8_t toCol;
+
+    (void)memset(bestMap, 0, sizeof(bestMap));
+
+    if ((stockfishBestValid == 0U) ||
+        (strcmp(stockfishBestFen, game.fen) != 0) ||
+        (isStockfishMoveText(stockfishBestMove) == false))
+    {
+        (void)snprintf(stateBest, sizeof(stateBest), "-----");
+        return;
+    }
+
+    from[0] = stockfishBestMove[0];
+    from[1] = stockfishBestMove[1];
+    from[2] = '\0';
+
+    to[0] = stockfishBestMove[2];
+    to[1] = stockfishBestMove[3];
+    to[2] = '\0';
+
+    if ((chess_square_to_index(from, &fromRow, &fromCol) == false) ||
+        (chess_square_to_index(to, &toRow, &toCol) == false))
+    {
+        clearStockfishBest();
+        return;
+    }
+
+    (void)snprintf(stateBest, sizeof(stateBest), "%s", stockfishBestMove);
+
+    if (orientationKnown == 0U)
+    {
+        return;
+    }
+
+    setVirtualBit(bestMap, fromRow, fromCol);
+    setVirtualBit(bestMap, toRow, toCol);
+}
+
+static void requestStockfishBestAsync(void)
+{
+    stockfish_request_t request;
+
+    if ((stockfishRequestQueue == NULL) || (gameMode != GAME_MODE_RUNNING))
+    {
+        return;
+    }
+
+    (void)memset(&request, 0, sizeof(request));
+
+    stockfishRequestSequence++;
+    request.requestId = stockfishRequestSequence;
+    (void)snprintf(request.fen, sizeof(request.fen), "%s", game.fen);
+
+    clearStockfishBest();
+
+    (void)xQueueOverwrite(stockfishRequestQueue, &request);
+
+    ESP_LOGI(
+        TAG,
+        "BEST_REQUEST id=%lu fen=%s",
+        (unsigned long)request.requestId,
+        request.fen
+    );
+}
+
+static void processStockfishResponses(void)
+{
+    stockfish_response_t response;
+
+    while ((stockfishResponseQueue != NULL) &&
+           (xQueueReceive(stockfishResponseQueue, &response, 0) == pdPASS))
+    {
+        if ((response.requestId != stockfishRequestSequence) ||
+            (strcmp(response.fen, game.fen) != 0))
+        {
+            ESP_LOGI(
+                TAG,
+                "BEST_DROP stale id=%lu current=%lu",
+                (unsigned long)response.requestId,
+                (unsigned long)stockfishRequestSequence
+            );
+            continue;
+        }
+
+        if ((response.result.valid == 0U) ||
+            (isStockfishMoveText(response.result.bestMove) == false))
+        {
+            clearStockfishBest();
+
+            ESP_LOGW(
+                TAG,
+                "BEST_UNAVAILABLE id=%lu fen=%s",
+                (unsigned long)response.requestId,
+                game.fen
+            );
+
+            sendLedFrame(0U);
+            continue;
+        }
+
+        stockfishBestValid = 1U;
+        (void)snprintf(stockfishBestFen, sizeof(stockfishBestFen), "%s", response.fen);
+        (void)snprintf(stockfishBestMove, sizeof(stockfishBestMove), "%s", response.result.bestMove);
+        (void)snprintf(stateStockfishJson, sizeof(stateStockfishJson), "%s", response.result.json);
+
+        refreshStockfishBestMap();
+
+        ESP_LOGI(
+            TAG,
+            "BEST_HINT id=%lu move=%s fen=%s",
+            (unsigned long)response.requestId,
+            stockfishBestMove,
+            game.fen
+        );
+
+        sendLedFrame(0U);
+    }
+}
+
+static void stockfishTask(void * parameters)
+{
+    stockfish_request_t request;
+    stockfish_request_t latest;
+    stockfish_response_t response;
+
+    (void)parameters;
+
+    ESP_LOGI(TAG, "StockfishOnline advisor task started");
+
+    for (;;)
+    {
+        if (stockfishRequestQueue == NULL)
+        {
+            vTaskDelay(pdMS_TO_TICKS(1000U));
+            continue;
+        }
+
+        if (xQueueReceive(stockfishRequestQueue, &request, portMAX_DELAY) == pdPASS)
+        {
+            while (xQueueReceive(stockfishRequestQueue, &latest, 0) == pdPASS)
+            {
+                request = latest;
+            }
+
+            (void)memset(&response, 0, sizeof(response));
+            response.requestId = request.requestId;
+            (void)snprintf(response.fen, sizeof(response.fen), "%s", request.fen);
+
+            (void)stockfishClientAnalyzeFen(request.fen, &response.result);
+
+            if (stockfishResponseQueue != NULL)
+            {
+                (void)xQueueOverwrite(stockfishResponseQueue, &response);
+            }
+        }
+    }
+}
+
 static void computeLiftHints(uint8_t row, uint8_t col)
 {
     chess_move_t moves[CHESS_MAX_MOVES];
-    chess_move_t best;
     uint32_t count;
-    char fromSquare[APP_SQUARE_TEXT_LEN];
-    char toSquare[APP_SQUARE_TEXT_LEN];
 
     clearMaps();
+
     count = chess_generate_legal_moves_from(&game, row, col, moves, CHESS_MAX_MOVES);
 
     for (uint32_t i = 0U; i < count; i++)
@@ -994,15 +1221,8 @@ static void computeLiftHints(uint8_t row, uint8_t col)
         setVirtualBit(legalMap, moves[i].to_row, moves[i].to_col);
     }
 
-    if (chess_engine_best_for_origin(&game, row, col, &best) == true)
-    {
-        setVirtualBit(bestMap, best.to_row, best.to_col);
-        virtualIndexToPhysicalSquare(best.from_row, best.from_col, fromSquare);
-        virtualIndexToPhysicalSquare(best.to_row, best.to_col, toSquare);
-        (void)snprintf(stateBest, sizeof(stateBest), "%c%c%c%c", fromSquare[0], fromSquare[1], toSquare[0], toSquare[1]);
-    }
-
     updateLegalTextFromMap();
+    refreshStockfishBestMap();
 }
 
 
@@ -1137,6 +1357,9 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
         }
     }
 
+    /* BEST_REQUEST_AFTER_MOVE */
+    requestStockfishBestAsync();
+
     return true;
 }
 
@@ -1164,8 +1387,13 @@ static void startGame(void)
     }
 
     chess_reset(&game);
+    /* STOCKFISH_DEFAULT_ORIENTATION_ON_START */
+    orientationKnown = 1U;
+    orientationFlipRanks = 0U;
     setMode(GAME_MODE_RUNNING, "RUNNING_WAIT_FIRST_WHITE");
-    sendLedFrame(1U);
+        /* BEST_REQUEST_AFTER_START */
+    requestStockfishBestAsync();
+sendLedFrame(1U);
     vTaskDelay(pdMS_TO_TICKS(START_RAINBOW_MS));
     sendLedFrame(0U);
 }
@@ -1442,11 +1670,45 @@ esp_err_t serverInit(QueueHandle_t sensorQueue, QueueHandle_t ledQueue)
             &gameCommandQueueControl
         );
 
-        if ((stateMutex != NULL) && (gameCommandQueue != NULL))
+
+        stockfishRequestQueue = xQueueCreateStatic(
+            STOCKFISH_REQUEST_QUEUE_LEN,
+            sizeof(stockfish_request_t),
+            stockfishRequestQueueStorage,
+            &stockfishRequestQueueControl
+        );
+
+        stockfishResponseQueue = xQueueCreateStatic(
+            STOCKFISH_RESPONSE_QUEUE_LEN,
+            sizeof(stockfish_response_t),
+            stockfishResponseQueueStorage,
+            &stockfishResponseQueueControl
+        );
+if ((stateMutex != NULL) &&
+            (gameCommandQueue != NULL) &&
+            (stockfishRequestQueue != NULL) &&
+            (stockfishResponseQueue != NULL))
         {
             chess_reset(&game);
             setMode(GAME_MODE_SETUP, "SETUP");
-            err = ESP_OK;
+            stockfishTaskHandle = xTaskCreateStatic(
+                stockfishTask,
+                "stockfish_task",
+                SERVER_STACK_WORD_COUNT(STOCKFISH_TASK_STACK_BYTES),
+                NULL,
+                STOCKFISH_TASK_PRIORITY,
+                stockfishTaskStack,
+                &stockfishTaskControlBlock
+            );
+
+            if (stockfishTaskHandle != NULL)
+            {
+                err = ESP_OK;
+            }
+            else
+            {
+                err = ESP_FAIL;
+            }
         }
     }
 
@@ -1660,6 +1922,7 @@ static esp_err_t startHttpServer(void)
         err = httpd_start(&httpServer, &config);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &rootUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stateUri);
+        if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stockfishUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &startUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &drawUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &promoteUri);
@@ -1675,7 +1938,7 @@ static esp_err_t startHttpServer(void)
 
 static esp_err_t rootHandler(httpd_req_t * req)
 {
-    static const char html[] = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Xadrez ESP32-S3</title><style>\nbody{font-family:Arial,sans-serif;background:#10131a;color:#eee;margin:18px}.layout{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}.board{display:grid;grid-template-columns:repeat(8,64px);grid-template-rows:repeat(8,64px);border:5px solid #222;background:#222}.sq{width:64px;height:64px;display:flex;align-items:center;justify-content:center;font-size:36px;box-sizing:border-box;position:relative;font-weight:700}.light{background:#d9c09b;color:#111}.dark{background:#73543a;color:#111}.coord{position:absolute;right:4px;bottom:3px;font-size:11px;opacity:.72}.phys{box-shadow:inset 0 0 0 6px #285dff}.turn{box-shadow:inset 0 0 0 8px #4ba3ff}.setupok{background:#064ec9!important;color:#fff;box-shadow:inset 0 0 0 4px #8bbcff}.legal{background:#d8c52f!important;color:#111}.best{background:#0b9f39!important;color:#fff}.invalid,.check{background:#c01818!important;color:#fff;box-shadow:inset 0 0 0 5px #ffb0b0}.sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}button{font-size:20px;margin:4px;padding:10px 18px;border-radius:8px;border:0}.box{background:#1d2430;padding:12px;margin:8px 0;border-radius:8px;max-width:900px}.fen{font-family:monospace;word-break:break-all;font-size:14px}.legend span{display:inline-block;padding:5px 8px;margin:3px;border-radius:5px}.blue{background:#064ec9}.red{background:#c01818}.yellow{background:#d8c52f;color:#111}.green{background:#0b9f39}.warn{font-size:18px;color:#ffd37a}.score{display:grid;grid-template-columns:1fr 1fr;gap:8px}.score div{background:#141a24;border-radius:6px;padding:8px}.statusCheck{color:#ffb0b0;font-weight:700;font-size:20px}</style></head><body><h1>Xadrez f\u00edsico ESP32-S3</h1><div><button onclick=\"startGame()\">Start</button><button onclick=\"promote('Q')\">Queen</button><button onclick=\"promote('R')\">Rook</button><button onclick=\"promote('B')\">Bishop</button><button onclick=\"promote('N')\">Knight</button><button onclick=\"drawGame()\">Draw</button></div><div class=\"box legend\"><span class=\"blue\">Setup blue = correct piece</span><span class=\"red\">Red = wrong/check</span><span class=\"yellow\">Legal move</span><span class=\"green\">Best local move</span></div><div class=\"layout\"><div class=\"board\" id=\"board\"></div><div><div class=\"box\" id=\"info\"></div><div class=\"box score\" id=\"captures\"></div><div class=\"box\" id=\"setup\"></div><div class=\"box fen\" id=\"fen\"></div><div class=\"box fen\" id=\"pgn\"></div></div></div><script>\nconst pcs={P:'\u2659',N:'\u2658',B:'\u2657',R:'\u2656',Q:'\u2655',K:'\u2654',p:'\u265f',n:'\u265e',b:'\u265d',r:'\u265c',q:'\u265b',k:'\u265a'};function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}async function drawGame(){await fetch('/api/draw',{method:'POST'});update();}\nfunction virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8'){x+=parseInt(ch);}else{if(x===f)return pcs[ch]||'';x++;}}return '';}\nfunction setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}\nfunction hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}\nasync function update(){let s=await (await fetch('/api/state')).json();let b=document.getElementById('board');let isSetup=s.mode==='SETUP';let check=hasCheck(s);b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;let text=isSetup?(phys?'\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));d.textContent=text;let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.mode==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';document.getElementById('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;document.getElementById('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';document.getElementById('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');document.getElementById('fen').textContent=s.fen;document.getElementById('pgn').textContent=s.pgn;}setInterval(update,500);update();</script></body></html>";
+    static const char html[] = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Xadrez ESP32-S3</title><style>\nbody{font-family:Arial,sans-serif;background:#10131a;color:#eee;margin:18px}.layout{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}.board{display:grid;grid-template-columns:repeat(8,64px);grid-template-rows:repeat(8,64px);border:5px solid #222;background:#222}.sq{width:64px;height:64px;display:flex;align-items:center;justify-content:center;font-size:36px;box-sizing:border-box;position:relative;font-weight:700}.light{background:#d9c09b;color:#111}.dark{background:#73543a;color:#111}.coord{position:absolute;right:4px;bottom:3px;font-size:11px;opacity:.72}.phys{box-shadow:inset 0 0 0 6px #285dff}.turn{box-shadow:inset 0 0 0 8px #4ba3ff}.setupok{background:#064ec9!important;color:#fff;box-shadow:inset 0 0 0 4px #8bbcff}.legal{background:#d8c52f!important;color:#111}.best{background:#0b9f39!important;color:#fff}.invalid,.check{background:#c01818!important;color:#fff;box-shadow:inset 0 0 0 5px #ffb0b0}.sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}button{font-size:20px;margin:4px;padding:10px 18px;border-radius:8px;border:0}.box{background:#1d2430;padding:12px;margin:8px 0;border-radius:8px;max-width:900px}.fen{font-family:monospace;word-break:break-all;font-size:14px}.legend span{display:inline-block;padding:5px 8px;margin:3px;border-radius:5px}.blue{background:#064ec9}.red{background:#c01818}.yellow{background:#d8c52f;color:#111}.green{background:#0b9f39}.warn{font-size:18px;color:#ffd37a}.score{display:grid;grid-template-columns:1fr 1fr;gap:8px}.score div{background:#141a24;border-radius:6px;padding:8px}.statusCheck{color:#ffb0b0;font-weight:700;font-size:20px}</style></head><body><h1>Xadrez f\u00edsico ESP32-S3</h1><div><button onclick=\"startGame()\">Start</button><button onclick=\"promote('Q')\">Queen</button><button onclick=\"promote('R')\">Rook</button><button onclick=\"promote('B')\">Bishop</button><button onclick=\"promote('N')\">Knight</button><button onclick=\"drawGame()\">Draw</button></div><div class=\"box legend\"><span class=\"blue\">Setup blue = correct piece</span><span class=\"red\">Red = wrong/check</span><span class=\"yellow\">Legal move</span><span class=\"green\">Best StockfishOnline move</span></div><div class=\"layout\"><div class=\"board\" id=\"board\"></div><div><div class=\"box\" id=\"info\"></div><div class=\"box score\" id=\"captures\"></div><div class=\"box\" id=\"setup\"></div><div class=\"box fen\" id=\"fen\"></div><div class=\"box fen\" id=\"pgn\"></div><div class=\"box fen\" id=\"stockfish\"></div></div></div><script>\nconst pcs={P:'\u2659',N:'\u2658',B:'\u2657',R:'\u2656',Q:'\u2655',K:'\u2654',p:'\u265f',n:'\u265e',b:'\u265d',r:'\u265c',q:'\u265b',k:'\u265a'};function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}async function drawGame(){await fetch('/api/draw',{method:'POST'});update();}\nfunction virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8'){x+=parseInt(ch);}else{if(x===f)return pcs[ch]||'';x++;}}return '';}\nfunction setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}\nfunction hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}\nasync function update(){let s=await (await fetch('/api/state')).json();let b=document.getElementById('board');let isSetup=s.mode==='SETUP';let check=hasCheck(s);b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;let text=isSetup?(phys?'\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));d.textContent=text;let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.mode==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';document.getElementById('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;document.getElementById('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';document.getElementById('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');document.getElementById('fen').textContent=s.fen;document.getElementById('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{document.getElementById('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{document.getElementById('stockfish').textContent='Stockfish JSON: unavailable';});}setInterval(update,500);update();</script></body></html>";
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
@@ -1691,6 +1954,34 @@ static void jsonArray8(char * dst, size_t len, const uint8_t map[8])
     (void)snprintf(dst, len, "[%u,%u,%u,%u,%u,%u,%u,%u]", map[0], map[1], map[2], map[3], map[4], map[5], map[6], map[7]);
 }
 
+
+static esp_err_t apiStockfishHandler(httpd_req_t * req)
+{
+    char stockfishJson[STOCKFISH_CLIENT_JSON_TEXT_LEN];
+
+    stockfishJson[0] = '\0';
+
+    if (stateMutex != NULL)
+    {
+        if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(200U)) == pdPASS)
+        {
+            (void)snprintf(stockfishJson, sizeof(stockfishJson), "%s", stateStockfishJson);
+            (void)xSemaphoreGive(stateMutex);
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+
+    if (stockfishJson[0] == '\0')
+    {
+        return httpd_resp_sendstr(req, "{\"success\":false,\"reason\":\"unavailable\"}");
+    }
+
+    return httpd_resp_sendstr(req, stockfishJson);
+}
+
+
 static esp_err_t apiStateHandler(httpd_req_t * req)
 {
     char chunk[4096U];
@@ -1701,7 +1992,7 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
     char invalid[64];
     char check[64];
     char setupExpected[64];
-    char capturedByWhite[96];
+        char capturedByWhite[96];
     char capturedByBlack[96];
     uint16_t whiteScore = 0U;
     uint16_t blackScore = 0U;
@@ -1754,7 +2045,6 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
     jsonArray8(invalid, sizeof(invalid), invalidMap);
     jsonArray8(check, sizeof(check), checkMap);
     jsonArray8(setupExpected, sizeof(setupExpected), expectedMap);
-
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     (void)snprintf(
@@ -1878,6 +2168,7 @@ void serverTask(void * parameters)
             if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U)) == pdPASS)
             {
                 handleSensorEvent(&event);
+                processStockfishResponses();
                 (void)xSemaphoreGive(stateMutex);
             }
         }
