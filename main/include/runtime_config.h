@@ -25,6 +25,8 @@ typedef struct
     uint8_t led_empty_enabled;
     uint8_t stockfish_enabled;
     uint8_t stockfish_depth;
+    uint16_t clock_initial_seconds;
+    uint16_t clock_bonus_seconds;
     uint8_t led_brightness_percent;
 
     project_rgb_t led_empty_rgb;
@@ -45,6 +47,8 @@ esp_err_t runtimeConfigSetInvalidPositionInfractions(uint8_t enabled);
 esp_err_t runtimeConfigSetLedEmptyEnabled(uint8_t enabled);
 esp_err_t runtimeConfigSetStockfishEnabled(uint8_t enabled);
 esp_err_t runtimeConfigSetStockfishDepth(uint8_t depth);
+esp_err_t runtimeConfigSetClockInitialSeconds(uint16_t seconds);
+esp_err_t runtimeConfigSetClockBonusSeconds(uint16_t seconds);
 esp_err_t runtimeConfigSetLedBrightness(uint8_t percent);
 esp_err_t runtimeConfigSetLedColor(runtime_led_color_id_t colorId, project_rgb_t color);
 project_rgb_t runtimeConfigColor(runtime_led_color_id_t colorId);

@@ -45,6 +45,8 @@
 #define STOCKFISH_TASK_PRIORITY      (2U)
 #define SERVER_STACK_WORD_COUNT(bytes_) (((bytes_) + sizeof(StackType_t) - 1U) / sizeof(StackType_t))
 #define CAPTURED_PIECE_SLOT_COUNT  (7U)
+#define CLOCK_CONFIG_MAX_SECONDS    (21600U)
+#define CLOCK_BONUS_MAX_SECONDS     (600U)
 
 typedef enum
 {
@@ -137,6 +139,10 @@ static uint8_t stockfishBestValid = 0U;
 static char stockfishBestFen[CHESS_FEN_LEN] = "";
 static char stockfishBestMove[APP_MOVE_TEXT_LEN] = "";
 static char stateStockfishJson[STOCKFISH_CLIENT_JSON_TEXT_LEN] = "";
+static uint32_t whiteClockMs = 0U;
+static uint32_t blackClockMs = 0U;
+static uint32_t clockLastTickMs = 0U;
+static uint8_t clockActive = 0U;
 
 static size_t boundedStringLength(const char * text, size_t maxLen);
 static void copyStringToU8(uint8_t * dst, size_t dstLen, const char * src);
@@ -155,6 +161,10 @@ static void setVirtualBit(uint8_t map[APP_BOARD_RANK_COUNT], uint8_t row, uint8_
 static bool selectOrientationForLift(const char square[APP_SQUARE_TEXT_LEN], uint8_t * row, uint8_t * col, chess_piece_t * piece);
 static void startGame(void);
 static void declareDraw(void);
+static void clockResetForNewGame(void);
+static void clockUpdate(void);
+static void clockApplyIncrement(chess_color_t side);
+static void declareTimeLoss(chess_color_t losingSide);
 static void handleSensorEvent(const sensor_event_t * event);
 static void handleGameCommand(const game_command_t * command);
 static void processPendingCommands(void);
@@ -238,6 +248,14 @@ static void setMode(game_mode_t mode, const char * text)
     (void)snprintf(oldText, sizeof(oldText), "%s", stateText);
 
     gameMode = mode;
+
+    if ((mode == GAME_MODE_SETUP) ||
+        (mode == GAME_MODE_CHECKMATE_LOCK) ||
+        (mode == GAME_MODE_DRAW_LOCK))
+    {
+        /* CLOCK_STOP_ON_TERMINAL_MODE */
+        clockActive = 0U;
+    }
     if (text != NULL)
     {
         (void)snprintf(stateText, sizeof(stateText), "%s", text);
@@ -1428,6 +1446,13 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
         pieceTypeText(promotion)
     );
 
+    /* CLOCK_UPDATE_BEFORE_MOVE_APPLY */
+    clockUpdate();
+    if (gameMode == GAME_MODE_CHECKMATE_LOCK)
+    {
+        return true;
+    }
+
     if (chess_is_legal_move(&game, &move) == false)
     {
         ESP_LOGW(TAG, "MOVE_REJECT reason=RULE_ENGINE physical=%s->%s virtual=%s->%s fen=%s", selectedSquare, toPhysical, fromText, toText, game.fen);
@@ -1457,6 +1482,8 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
     }
 
     recordCapturedPiece(movingPiece.color, capturedPiece);
+    /* CLOCK_BONUS_AFTER_MOVE */
+    clockApplyIncrement(movingPiece.color);
     ESP_LOGI(TAG, "MOVE_OK physical=%s->%s virtual=%s->%s captured=%s/%s fen=%s pgn=%s next=%s", selectedSquare, toPhysical, fromText, toText, pieceColorText(capturedPiece.color), pieceTypeText(capturedPiece.type), game.fen, game.pgn, pieceColorText(game.side_to_move));
     selectedValid = 0U;
     selectedSquare[0] = '\0';
@@ -1505,16 +1532,182 @@ static void startGame(void)
     }
 
     chess_reset(&game);
+    /* CLOCK_RESET_ON_START */
+    clockResetForNewGame();
     /* STOCKFISH_DEFAULT_ORIENTATION_ON_START */
     orientationKnown = 1U;
     orientationFlipRanks = 0U;
     setMode(GAME_MODE_RUNNING, "RUNNING_WAIT_FIRST_WHITE");
-    /* BEST_REQUEST_AFTER_START */
-    requestStockfishBestAsync();
+    /* CLOCK_UPDATE_ON_START_ZERO */
+    clockUpdate();
+
+    if (gameMode == GAME_MODE_RUNNING)
+    {
+        /* BEST_REQUEST_AFTER_START */
+        requestStockfishBestAsync();
+    }
     sendLedFrame(1U);
     vTaskDelay(pdMS_TO_TICKS(START_RAINBOW_MS));
     sendLedFrame(0U);
 }
+
+
+static uint32_t clockNowMs(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static uint32_t clockSecondsToMs(uint16_t seconds)
+{
+    return ((uint32_t)seconds * 1000U);
+}
+
+static uint32_t clockAddMs(uint32_t currentMs, uint32_t addMs)
+{
+    uint32_t value = currentMs;
+
+    if ((UINT32_MAX - value) < addMs)
+    {
+        value = UINT32_MAX;
+    }
+    else
+    {
+        value += addMs;
+    }
+
+    return value;
+}
+
+static bool clockModeAllowsCounting(void)
+{
+    bool active = false;
+
+    if ((gameMode == GAME_MODE_RUNNING) ||
+        (gameMode == GAME_MODE_LIFTED) ||
+        (gameMode == GAME_MODE_PROMOTION_PENDING) ||
+        (gameMode == GAME_MODE_INVALID_LOCK) ||
+        (gameMode == GAME_MODE_SYNC_WAIT))
+    {
+        active = true;
+    }
+
+    return active;
+}
+
+static void clockResetForNewGame(void)
+{
+    uint32_t initialMs;
+
+    initialMs = clockSecondsToMs(runtimeConfigGet()->clock_initial_seconds);
+    whiteClockMs = initialMs;
+    blackClockMs = initialMs;
+    clockLastTickMs = clockNowMs();
+    clockActive = 1U;
+}
+
+static void declareTimeLoss(chess_color_t losingSide)
+{
+    clearMaps();
+    selectedValid = 0U;
+    selectedSquare[0] = '\0';
+    pendingPromotionValid = 0U;
+    drawOfferActive = 0U;
+    drawOfferByWhite = 0U;
+    clockActive = 0U;
+
+    winnerWhite = (losingSide == CHESS_BLACK) ? 1U : 0U;
+
+    if (losingSide == CHESS_WHITE)
+    {
+        setMode(GAME_MODE_CHECKMATE_LOCK, "WHITE_TIME_LOSS");
+    }
+    else
+    {
+        setMode(GAME_MODE_CHECKMATE_LOCK, "BLACK_TIME_LOSS");
+    }
+
+    ESP_LOGW(TAG, "CLOCK_LOSS side=%s", pieceColorText(losingSide));
+    sendLedFrame(0U);
+}
+
+static void clockUpdate(void)
+{
+    uint32_t nowMs;
+    uint32_t elapsedMs;
+    uint32_t * activeClock = NULL;
+    chess_color_t activeSide = game.side_to_move;
+
+    if (clockActive == 0U)
+    {
+        return;
+    }
+
+    nowMs = clockNowMs();
+
+    if (clockModeAllowsCounting() == false)
+    {
+        clockLastTickMs = nowMs;
+        return;
+    }
+
+    if (activeSide == CHESS_WHITE)
+    {
+        activeClock = &whiteClockMs;
+    }
+    else if (activeSide == CHESS_BLACK)
+    {
+        activeClock = &blackClockMs;
+    }
+
+    if (activeClock == NULL)
+    {
+        clockLastTickMs = nowMs;
+        return;
+    }
+
+    if (*activeClock == 0U)
+    {
+        declareTimeLoss(activeSide);
+        return;
+    }
+
+    elapsedMs = nowMs - clockLastTickMs;
+    clockLastTickMs = nowMs;
+
+    if (elapsedMs >= *activeClock)
+    {
+        *activeClock = 0U;
+        declareTimeLoss(activeSide);
+    }
+    else
+    {
+        *activeClock -= elapsedMs;
+    }
+}
+
+static void clockApplyIncrement(chess_color_t side)
+{
+    uint32_t bonusMs;
+
+    if (clockActive == 0U)
+    {
+        return;
+    }
+
+    bonusMs = clockSecondsToMs(runtimeConfigGet()->clock_bonus_seconds);
+
+    if (side == CHESS_WHITE)
+    {
+        whiteClockMs = clockAddMs(whiteClockMs, bonusMs);
+    }
+    else if (side == CHESS_BLACK)
+    {
+        blackClockMs = clockAddMs(blackClockMs, bonusMs);
+    }
+
+    clockLastTickMs = clockNowMs();
+}
+
 
 static void declareDraw(void)
 {
@@ -2076,7 +2269,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         ".sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}"
         ".box{background:#1d2430;padding:12px;margin:8px 0;border-radius:8px;max-width:920px}.fen{font-family:monospace;word-break:break-all;font-size:14px}"
         ".score{display:grid;grid-template-columns:1fr 1fr;gap:8px}.score div{background:#141a24;border-radius:6px;padding:8px}"
-        ".warn,.drawState{font-size:16px;color:#ffd37a;font-weight:700}.statusCheck{color:#ffb0b0;font-weight:700;font-size:20px}"
+        ".warn,.drawState{font-size:16px;color:#ffd37a;font-weight:700}.clockState{font-size:20px;color:#ffffff;font-weight:700}.statusCheck{color:#ffb0b0;font-weight:700;font-size:20px}"
         ".grid{display:grid;grid-template-columns:230px 170px;gap:10px;align-items:center}.grid input[type=color]{width:90px;height:36px}.grid input[type=range]{width:190px}"
         ".small{font-size:13px;color:#b8c4d6}.side button{display:block;width:100%;margin:6px 0}"
         "</style></head><body>"
@@ -2084,7 +2277,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "<div class=\"tabs\"><button onclick=\"showTab('boardTab')\">Board</button><button onclick=\"showTab('configTab')\">Configuration</button></div>"
         "<div id=\"boardTab\" class=\"tab active\">"
         "<div><button onclick=\"startGame()\">Start</button><button onclick=\"promote('Q')\">Queen</button><button onclick=\"promote('R')\">Rook</button><button onclick=\"promote('B')\">Bishop</button><button onclick=\"promote('N')\">Knight</button></div>"
-        "<div id=\"drawInfo\" class=\"box drawState\">No active draw offer.</div>"
+        "<div id=\"drawInfo\" class=\"box drawState\">No active draw offer.</div><div id=\"clock\" class=\"box clockState\">Clock unavailable</div>"
         "<div class=\"layout\">"
         "<div class=\"side\"><h3>White draw</h3><button onclick=\"drawAction('propose','white')\">Propose draw</button><button onclick=\"drawAction('accept','white')\">Accept black offer</button><button onclick=\"drawAction('reject','white')\">Reject black offer</button></div>"
         "<div class=\"board\" id=\"board\"></div>"
@@ -2093,7 +2286,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "</div></div>"
         "<div id=\"configTab\" class=\"tab\">"
         "<div class=\"box\"><h2>Runtime configuration</h2><div class=\"grid\">"
-        "<label>Invalid-position infractions</label><input id=\"cfgInfractions\" type=\"checkbox\"><label>Empty square LEDs</label><input id=\"cfgEmptyEnabled\" type=\"checkbox\"><label>StockfishOnline advisor</label><input id=\"cfgStockfishEnabled\" type=\"checkbox\"><label>Stockfish depth</label><select id=\"cfgStockfishDepth\"><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select>"
+        "<label>Invalid-position infractions</label><input id=\"cfgInfractions\" type=\"checkbox\"><label>Empty square LEDs</label><input id=\"cfgEmptyEnabled\" type=\"checkbox\"><label>StockfishOnline advisor</label><input id=\"cfgStockfishEnabled\" type=\"checkbox\"><label>Stockfish depth</label><select id=\"cfgStockfishDepth\"><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select><label>Clock time (minutes)</label><input id=\"cfgClockMinutes\" type=\"number\" min=\"0\" max=\"360\" value=\"5\"><label>Move bonus (seconds)</label><input id=\"cfgClockBonus\" type=\"number\" min=\"0\" max=\"600\" value=\"0\">"
         "<label>LED brightness</label><input id=\"cfgBrightness\" type=\"range\" min=\"0\" max=\"100\" oninput=\"document.getElementById('brightnessText').textContent=this.value+'%'\">"
         "<span></span><span id=\"brightnessText\">-</span>"
         "<label>Empty square</label><input id=\"cfgEmpty\" type=\"color\">"
@@ -2115,10 +2308,10 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "function virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}"
         "function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8')x+=parseInt(ch);else{if(x===f)return pcs[ch]||'';x++;}}return '';}"
         "function setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}"
-        "function hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}"
-        "async function loadConfig(){try{let c=await (await fetch('/api/config')).json();el('cfgInfractions').checked=!!c.infractions;el('cfgEmptyEnabled').checked=!!c.empty_enabled;el('cfgStockfishEnabled').checked=!!c.stockfish_enabled;el('cfgStockfishDepth').value=c.stockfish_depth;el('cfgBrightness').value=c.brightness;el('brightnessText').textContent=c.brightness+'%';el('cfgEmpty').value=c.empty;el('cfgPiece').value=c.piece;el('cfgLifted').value=c.lifted;el('cfgLegal').value=c.legal;el('cfgBest').value=c.best;el('cfgInvalid').value=c.invalid;el('cfgCheck').value=c.check;el('cfgDraw').value=c.draw;el('configStatus').textContent='Loaded';}catch(e){el('configStatus').textContent='Config API unavailable';}}"
-        "async function resetConfig(){let r=await fetch('/api/config?reset=1',{method:'POST'});el('configStatus').textContent=await r.text();await loadConfig();update();}async function saveConfig(){let p=new URLSearchParams();p.set('infractions',el('cfgInfractions').checked?'1':'0');p.set('empty_enabled',el('cfgEmptyEnabled').checked?'1':'0');p.set('stockfish_enabled',el('cfgStockfishEnabled').checked?'1':'0');p.set('stockfish_depth',el('cfgStockfishDepth').value);p.set('brightness',el('cfgBrightness').value);p.set('empty',el('cfgEmpty').value.substring(1));p.set('piece',el('cfgPiece').value.substring(1));p.set('lifted',el('cfgLifted').value.substring(1));p.set('legal',el('cfgLegal').value.substring(1));p.set('best',el('cfgBest').value.substring(1));p.set('invalid',el('cfgInvalid').value.substring(1));p.set('check',el('cfgCheck').value.substring(1));p.set('draw',el('cfgDraw').value.substring(1));let r=await fetch('/api/config?'+p.toString(),{method:'POST'});el('configStatus').textContent=await r.text();update();}"
-        "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;d.textContent=isSetup?(phys?'\\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
+        "function hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}function fmtClock(ms){let t=Math.ceil((ms||0)/1000);let m=Math.floor(t/60);let sec=t%60;return m+':'+String(sec).padStart(2,'0');}"
+        "async function loadConfig(){try{let c=await (await fetch('/api/config')).json();el('cfgInfractions').checked=!!c.infractions;el('cfgEmptyEnabled').checked=!!c.empty_enabled;el('cfgStockfishEnabled').checked=!!c.stockfish_enabled;el('cfgStockfishDepth').value=c.stockfish_depth;el('cfgClockMinutes').value=Math.floor((c.clock_initial_seconds||0)/60);el('cfgClockBonus').value=c.clock_bonus_seconds||0;el('cfgBrightness').value=c.brightness;el('brightnessText').textContent=c.brightness+'%';el('cfgEmpty').value=c.empty;el('cfgPiece').value=c.piece;el('cfgLifted').value=c.lifted;el('cfgLegal').value=c.legal;el('cfgBest').value=c.best;el('cfgInvalid').value=c.invalid;el('cfgCheck').value=c.check;el('cfgDraw').value=c.draw;el('configStatus').textContent='Loaded';}catch(e){el('configStatus').textContent='Config API unavailable';}}"
+        "async function resetConfig(){let r=await fetch('/api/config?reset=1',{method:'POST'});el('configStatus').textContent=await r.text();await loadConfig();update();}async function saveConfig(){let p=new URLSearchParams();p.set('infractions',el('cfgInfractions').checked?'1':'0');p.set('empty_enabled',el('cfgEmptyEnabled').checked?'1':'0');p.set('stockfish_enabled',el('cfgStockfishEnabled').checked?'1':'0');p.set('stockfish_depth',el('cfgStockfishDepth').value);p.set('clock_initial_seconds',String((parseInt(el('cfgClockMinutes').value,10)||0)*60));p.set('clock_bonus_seconds',el('cfgClockBonus').value);p.set('brightness',el('cfgBrightness').value);p.set('empty',el('cfgEmpty').value.substring(1));p.set('piece',el('cfgPiece').value.substring(1));p.set('lifted',el('cfgLifted').value.substring(1));p.set('legal',el('cfgLegal').value.substring(1));p.set('best',el('cfgBest').value.substring(1));p.set('invalid',el('cfgInvalid').value.substring(1));p.set('check',el('cfgCheck').value.substring(1));p.set('draw',el('cfgDraw').value.substring(1));let r=await fetch('/api/config?'+p.toString(),{method:'POST'});el('configStatus').textContent=await r.text();update();}"
+        "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;d.textContent=isSetup?(phys?'\\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('clock').innerHTML='<b>Clock</b><br>White: '+fmtClock(s.white_clock_ms)+'<br>Black: '+fmtClock(s.black_clock_ms)+'<br>Bonus: '+(s.clock_bonus_seconds||0)+'s/move';el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
         "setInterval(update,500);update();loadConfig();"
         "</script></body></html>";
 
@@ -2207,6 +2400,22 @@ static uint8_t queryUint8Value(const char * query, const char * key, uint8_t fal
 
     return fallback;
 }
+
+
+static uint16_t queryUint16Value(const char * query, const char * key, uint16_t fallback, uint16_t maxValue)
+{
+    char value[16];
+
+    if ((query != NULL) &&
+        (key != NULL) &&
+        (httpd_query_key_value(query, key, value, sizeof(value)) == ESP_OK))
+    {
+        return (uint16_t)parseQueryUint(value, fallback, maxValue);
+    }
+
+    return fallback;
+}
+
 
 static bool hexNibble(char ch, uint8_t * value)
 {
@@ -2341,6 +2550,14 @@ static esp_err_t apiConfigHandler(httpd_req_t * req)
                 queryUint8Value(query, "stockfish_depth", current->stockfish_depth, 15U)
             );
 
+            (void)runtimeConfigSetClockInitialSeconds(
+                queryUint16Value(query, "clock_initial_seconds", current->clock_initial_seconds, CLOCK_CONFIG_MAX_SECONDS)
+            );
+
+            (void)runtimeConfigSetClockBonusSeconds(
+                queryUint16Value(query, "clock_bonus_seconds", current->clock_bonus_seconds, CLOCK_BONUS_MAX_SECONDS)
+            );
+
             (void)runtimeConfigSetLedBrightness(
                 queryUint8Value(query, "brightness", current->led_brightness_percent, 100U)
             );
@@ -2363,11 +2580,13 @@ static esp_err_t apiConfigHandler(httpd_req_t * req)
     pos += (size_t)snprintf(
         response,
         sizeof(response),
-        "{\"infractions\":%u,\"empty_enabled\":%u,\"stockfish_enabled\":%u,\"stockfish_depth\":%u,\"brightness\":%u",
+        "{\"infractions\":%u,\"empty_enabled\":%u,\"stockfish_enabled\":%u,\"stockfish_depth\":%u,\"clock_initial_seconds\":%u,\"clock_bonus_seconds\":%u,\"brightness\":%u",
         (unsigned int)cfg->invalid_position_infractions_enabled,
         (unsigned int)cfg->led_empty_enabled,
         (unsigned int)cfg->stockfish_enabled,
         (unsigned int)cfg->stockfish_depth,
+        (unsigned int)cfg->clock_initial_seconds,
+        (unsigned int)cfg->clock_bonus_seconds,
         (unsigned int)cfg->led_brightness_percent
     );
 
@@ -2456,6 +2675,9 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
         }
     }
 
+    /* CLOCK_UPDATE_API_STATE */
+    clockUpdate();
+
     buildCapturedMaterialText(CHESS_WHITE, capturedByWhite, sizeof(capturedByWhite), &whiteScore);
     buildCapturedMaterialText(CHESS_BLACK, capturedByBlack, sizeof(capturedByBlack), &blackScore);
 
@@ -2498,7 +2720,7 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
     (void)snprintf(
         chunk,
         sizeof(chunk),
-        "{\"mode\":\"%s\",\"state\":\"%s\",\"turn_text\":\"%s\",\"orientation\":\"%s\",\"fen\":\"%s\",\"pgn\":\"%s\",\"selected\":\"%s\",\"legal_text\":\"%s\",\"best_move\":\"%s\",\"white_captured\":\"%s\",\"black_captured\":\"%s\",\"white_score\":%u,\"black_score\":%u,\"white_infractions\":%u,\"black_infractions\":%u,\"draw_offer\":%u,\"draw_offer_by\":\"%s\",\"physical\":%s,\"turn\":%s,\"legal\":%s,\"best\":%s,\"invalid\":%s,\"check\":%s,\"setup_expected\":%s}",
+        "{\"mode\":\"%s\",\"state\":\"%s\",\"turn_text\":\"%s\",\"orientation\":\"%s\",\"fen\":\"%s\",\"pgn\":\"%s\",\"selected\":\"%s\",\"legal_text\":\"%s\",\"best_move\":\"%s\",\"white_captured\":\"%s\",\"black_captured\":\"%s\",\"white_score\":%u,\"black_score\":%u,\"white_infractions\":%u,\"black_infractions\":%u,\"draw_offer\":%u,\"draw_offer_by\":\"%s\",\"white_clock_ms\":%lu,\"black_clock_ms\":%lu,\"clock_active\":%u,\"clock_initial_seconds\":%u,\"clock_bonus_seconds\":%u,\"physical\":%s,\"turn\":%s,\"legal\":%s,\"best\":%s,\"invalid\":%s,\"check\":%s,\"setup_expected\":%s}",
         modeToText(gameMode),
         stateText,
         turnText,
@@ -2516,6 +2738,11 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
         (unsigned int)blackInfractions,
         (unsigned int)drawOfferActive,
         drawOfferText,
+        (unsigned long)whiteClockMs,
+        (unsigned long)blackClockMs,
+        (unsigned int)clockActive,
+        (unsigned int)runtimeConfigGet()->clock_initial_seconds,
+        (unsigned int)runtimeConfigGet()->clock_bonus_seconds,
         physical,
         turn,
         legal,
@@ -2708,6 +2935,8 @@ void serverTask(void * parameters)
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U)) == pdPASS)
         {
             processPendingCommands();
+            /* CLOCK_UPDATE_SERVER_LOOP */
+            clockUpdate();
             (void)xSemaphoreGive(stateMutex);
         }
 

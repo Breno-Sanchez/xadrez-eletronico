@@ -7,6 +7,9 @@
 #include "nvs.h"
 
 #define RUNTIME_CONFIG_NAMESPACE "runtime_cfg"
+#define RUNTIME_CLOCK_DEFAULT_SECONDS (300U)
+#define RUNTIME_CLOCK_MAX_SECONDS     (21600U)
+#define RUNTIME_CLOCK_BONUS_MAX_SEC   (600U)
 
 static runtime_config_t runtimeConfig;
 static uint8_t runtimeConfigLoaded = 0U;
@@ -38,6 +41,11 @@ static uint8_t clampStockfishDepth(uint8_t depth)
     return value;
 }
 
+static uint16_t clampClockSeconds(uint16_t seconds, uint16_t maxSeconds)
+{
+    return (seconds > maxSeconds) ? maxSeconds : seconds;
+}
+
 static void setDefaults(runtime_config_t * cfg)
 {
     const project_config_t * projectCfg;
@@ -55,6 +63,8 @@ static void setDefaults(runtime_config_t * cfg)
     cfg->led_empty_enabled = 0U;
     cfg->stockfish_enabled = (projectCfg->stockfish_enabled != 0U) ? 1U : 0U;
     cfg->stockfish_depth = clampStockfishDepth(projectCfg->stockfish_depth);
+    cfg->clock_initial_seconds = RUNTIME_CLOCK_DEFAULT_SECONDS;
+    cfg->clock_bonus_seconds = 0U;
     cfg->led_brightness_percent = projectCfg->led_brightness_percent;
 
     cfg->led_empty_rgb = projectCfg->led_empty_rgb;
@@ -136,6 +146,29 @@ static esp_err_t saveU8(nvs_handle_t handle, const char * key, uint8_t value)
     return nvs_set_u8(handle, key, value);
 }
 
+static void loadU16(nvs_handle_t handle, const char * key, uint16_t * value)
+{
+    uint16_t tmp;
+
+    if ((key != NULL) && (value != NULL))
+    {
+        if (nvs_get_u16(handle, key, &tmp) == ESP_OK)
+        {
+            *value = tmp;
+        }
+    }
+}
+
+static esp_err_t saveU16(nvs_handle_t handle, const char * key, uint16_t value)
+{
+    if (key == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return nvs_set_u16(handle, key, value);
+}
+
 static void loadColor(nvs_handle_t handle, runtime_led_color_id_t colorId)
 {
     project_rgb_t * color;
@@ -205,6 +238,10 @@ esp_err_t runtimeConfigLoadFromNvs(void)
     loadU8(handle, "sf_on", &runtimeConfig.stockfish_enabled);
     loadU8(handle, "sf_depth", &runtimeConfig.stockfish_depth);
     runtimeConfig.stockfish_depth = clampStockfishDepth(runtimeConfig.stockfish_depth);
+    loadU16(handle, "clk_init", &runtimeConfig.clock_initial_seconds);
+    loadU16(handle, "clk_bonus", &runtimeConfig.clock_bonus_seconds);
+    runtimeConfig.clock_initial_seconds = clampClockSeconds(runtimeConfig.clock_initial_seconds, RUNTIME_CLOCK_MAX_SECONDS);
+    runtimeConfig.clock_bonus_seconds = clampClockSeconds(runtimeConfig.clock_bonus_seconds, RUNTIME_CLOCK_BONUS_MAX_SEC);
     loadU8(handle, "bright", &runtimeConfig.led_brightness_percent);
 
     if (runtimeConfig.led_brightness_percent > 100U)
@@ -238,6 +275,8 @@ esp_err_t runtimeConfigSave(void)
     if (err == ESP_OK) err = saveU8(handle, "empty_on", runtimeConfig.led_empty_enabled);
     if (err == ESP_OK) err = saveU8(handle, "sf_on", runtimeConfig.stockfish_enabled);
     if (err == ESP_OK) err = saveU8(handle, "sf_depth", runtimeConfig.stockfish_depth);
+    if (err == ESP_OK) err = saveU16(handle, "clk_init", runtimeConfig.clock_initial_seconds);
+    if (err == ESP_OK) err = saveU16(handle, "clk_bonus", runtimeConfig.clock_bonus_seconds);
     if (err == ESP_OK) err = saveU8(handle, "bright", runtimeConfig.led_brightness_percent);
 
     for (uint8_t colorId = 0U; (err == ESP_OK) && (colorId < (uint8_t)RUNTIME_LED_COLOR_COUNT); colorId++)
@@ -286,6 +325,20 @@ esp_err_t runtimeConfigSetStockfishDepth(uint8_t depth)
 {
     (void)runtimeConfigGet();
     runtimeConfig.stockfish_depth = clampStockfishDepth(depth);
+    return runtimeConfigSave();
+}
+
+esp_err_t runtimeConfigSetClockInitialSeconds(uint16_t seconds)
+{
+    (void)runtimeConfigGet();
+    runtimeConfig.clock_initial_seconds = clampClockSeconds(seconds, RUNTIME_CLOCK_MAX_SECONDS);
+    return runtimeConfigSave();
+}
+
+esp_err_t runtimeConfigSetClockBonusSeconds(uint16_t seconds)
+{
+    (void)runtimeConfigGet();
+    runtimeConfig.clock_bonus_seconds = clampClockSeconds(seconds, RUNTIME_CLOCK_BONUS_MAX_SEC);
     return runtimeConfigSave();
 }
 
