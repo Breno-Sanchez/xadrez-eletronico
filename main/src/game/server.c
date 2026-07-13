@@ -196,7 +196,6 @@ static esp_err_t initEnterpriseAuth(const wifi_enterprise_credentials_t * creden
 static void eventHandler(void * arg, esp_event_base_t base, int32_t id, void * data);
 static esp_err_t startHttpServer(void);
 static esp_err_t rootHandler(httpd_req_t * req);
-static esp_err_t pieceAssetHandler(httpd_req_t * req);
 static esp_err_t apiStateHandler(httpd_req_t * req);
 static esp_err_t apiStockfishHandler(httpd_req_t * req);
 static esp_err_t apiConfigHandler(httpd_req_t * req);
@@ -204,55 +203,6 @@ static esp_err_t apiStartHandler(httpd_req_t * req);
 static esp_err_t apiPromoteHandler(httpd_req_t * req);
 static esp_err_t apiDrawHandler(httpd_req_t * req);
 
-
-extern const uint8_t _binary_wK_svg_start[] asm("_binary_wK_svg_start");
-extern const uint8_t _binary_wK_svg_end[] asm("_binary_wK_svg_end");
-extern const uint8_t _binary_wQ_svg_start[] asm("_binary_wQ_svg_start");
-extern const uint8_t _binary_wQ_svg_end[] asm("_binary_wQ_svg_end");
-extern const uint8_t _binary_wR_svg_start[] asm("_binary_wR_svg_start");
-extern const uint8_t _binary_wR_svg_end[] asm("_binary_wR_svg_end");
-extern const uint8_t _binary_wB_svg_start[] asm("_binary_wB_svg_start");
-extern const uint8_t _binary_wB_svg_end[] asm("_binary_wB_svg_end");
-extern const uint8_t _binary_wN_svg_start[] asm("_binary_wN_svg_start");
-extern const uint8_t _binary_wN_svg_end[] asm("_binary_wN_svg_end");
-extern const uint8_t _binary_wP_svg_start[] asm("_binary_wP_svg_start");
-extern const uint8_t _binary_wP_svg_end[] asm("_binary_wP_svg_end");
-extern const uint8_t _binary_bK_svg_start[] asm("_binary_bK_svg_start");
-extern const uint8_t _binary_bK_svg_end[] asm("_binary_bK_svg_end");
-extern const uint8_t _binary_bQ_svg_start[] asm("_binary_bQ_svg_start");
-extern const uint8_t _binary_bQ_svg_end[] asm("_binary_bQ_svg_end");
-extern const uint8_t _binary_bR_svg_start[] asm("_binary_bR_svg_start");
-extern const uint8_t _binary_bR_svg_end[] asm("_binary_bR_svg_end");
-extern const uint8_t _binary_bB_svg_start[] asm("_binary_bB_svg_start");
-extern const uint8_t _binary_bB_svg_end[] asm("_binary_bB_svg_end");
-extern const uint8_t _binary_bN_svg_start[] asm("_binary_bN_svg_start");
-extern const uint8_t _binary_bN_svg_end[] asm("_binary_bN_svg_end");
-extern const uint8_t _binary_bP_svg_start[] asm("_binary_bP_svg_start");
-extern const uint8_t _binary_bP_svg_end[] asm("_binary_bP_svg_end");
-
-typedef struct
-{
-    const char * uri;
-    const uint8_t * start;
-    const uint8_t * end;
-} piece_asset_t;
-
-static const piece_asset_t pieceAssets[] = {
-    { "/piece/cburnett/wK.svg", _binary_wK_svg_start, _binary_wK_svg_end },
-    { "/piece/cburnett/wQ.svg", _binary_wQ_svg_start, _binary_wQ_svg_end },
-    { "/piece/cburnett/wR.svg", _binary_wR_svg_start, _binary_wR_svg_end },
-    { "/piece/cburnett/wB.svg", _binary_wB_svg_start, _binary_wB_svg_end },
-    { "/piece/cburnett/wN.svg", _binary_wN_svg_start, _binary_wN_svg_end },
-    { "/piece/cburnett/wP.svg", _binary_wP_svg_start, _binary_wP_svg_end },
-    { "/piece/cburnett/bK.svg", _binary_bK_svg_start, _binary_bK_svg_end },
-    { "/piece/cburnett/bQ.svg", _binary_bQ_svg_start, _binary_bQ_svg_end },
-    { "/piece/cburnett/bR.svg", _binary_bR_svg_start, _binary_bR_svg_end },
-    { "/piece/cburnett/bB.svg", _binary_bB_svg_start, _binary_bB_svg_end },
-    { "/piece/cburnett/bN.svg", _binary_bN_svg_start, _binary_bN_svg_end },
-    { "/piece/cburnett/bP.svg", _binary_bP_svg_start, _binary_bP_svg_end }
-};
-
-static const httpd_uri_t pieceAssetUri = { .uri = "/piece/cburnett/*", .method = HTTP_GET, .handler = pieceAssetHandler, .user_ctx = NULL };
 
 static const httpd_uri_t rootUri = {
  .uri = "/", .method = HTTP_GET, .handler = rootHandler, .user_ctx = NULL };
@@ -2279,13 +2229,12 @@ static esp_err_t startHttpServer(void)
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.stack_size = 12288U;
         config.lru_purge_enable = true;
+        config.max_uri_handlers = 16U;
         config.recv_wait_timeout = 5;
         config.send_wait_timeout = 5;
-        config.uri_match_fn = httpd_uri_match_wildcard;
 
         err = httpd_start(&httpServer, &config);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &rootUri);
-        if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &pieceAssetUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stateUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stockfishUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &configGetUri);
@@ -2304,34 +2253,6 @@ static esp_err_t startHttpServer(void)
 }
 
 
-static esp_err_t pieceAssetHandler(httpd_req_t * req)
-{
-    size_t index;
-
-    if (req == NULL)
-    {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    for (index = 0U; index < (sizeof(pieceAssets) / sizeof(pieceAssets[0])); index++)
-    {
-        if (strcmp(req->uri, pieceAssets[index].uri) == 0)
-        {
-            const uint8_t * start = pieceAssets[index].start;
-            const uint8_t * end = pieceAssets[index].end;
-            size_t len = (size_t)(end - start);
-
-            httpd_resp_set_type(req, "image/svg+xml");
-            httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
-            return httpd_resp_send(req, (const char *)start, len);
-        }
-    }
-
-    httpd_resp_set_status(req, "404 Not Found");
-    httpd_resp_set_type(req, "text/plain");
-    return httpd_resp_sendstr(req, "piece asset not found");
-}
-
 static esp_err_t rootHandler(httpd_req_t * req)
 {
     static const char html[] =
@@ -2345,7 +2266,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         ".layout{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}.side{background:#1d2430;padding:10px;border-radius:8px}"
         ".board{display:grid;grid-template-columns:repeat(8,58px);grid-template-rows:repeat(8,58px);border:6px solid #2b2118;background:#2b2118;border-radius:10px;overflow:hidden;box-shadow:0 14px 40px #0009}"
         ".sq{width:58px;height:58px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;position:relative;font-weight:700}"
-        ".piece{width:88%;height:88%;display:block;filter:drop-shadow(0 3px 2px #0008);pointer-events:none;user-select:none}.light{background:#f0d9b5;color:#111}.dark{background:#b58863;color:#111}.coord{position:absolute;right:3px;bottom:2px;font-size:10px;opacity:.75}"
+        ".piece{width:92%;height:92%;display:block;pointer-events:none;user-select:none}.piece svg{width:100%;height:100%;display:block}.whitePiece{filter:drop-shadow(0 3px 2px #000b)}.blackPiece{filter:drop-shadow(0 2px 2px #ffffff55)}.whitePiece svg *{fill:#f7f7f7!important;stroke:#242424!important;stroke-width:1.65!important}.blackPiece svg *{fill:#3a3a3a!important;stroke:#101010!important;stroke-width:1.75!important}.light{background:#f0d9b5;color:#111}.dark{background:#b58863;color:#111}.coord{position:absolute;right:3px;bottom:2px;font-size:10px;opacity:.75}"
         ".phys{box-shadow:inset 0 0 0 5px #285dff}.turn{box-shadow:inset 0 0 0 7px #4ba3ff}.setupok{background:#064ec9!important;color:#fff}"
         ".legal{background:#d8c52f!important;color:#111}.best{background:#0b9f39!important;color:#fff}.invalid,.check{background:#c01818!important;color:#fff;box-shadow:inset 0 0 0 5px #ffb0b0}"
         ".sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}"
@@ -2382,18 +2303,29 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "</div><br><button onclick=\"saveConfig()\">Save configuration</button><button onclick=\"resetConfig()\">Default configuration</button><button onclick=\"loadConfig()\">Reload</button>"
         "<div id=\"configStatus\" class=\"small\">-</div></div></div>"
         "<script>"
-        "const pieceMap={P:'wP',N:'wN',B:'wB',R:'wR',Q:'wQ',K:'wK',p:'bP',n:'bN',b:'bB',r:'bR',q:'bQ',k:'bK'};"
+        "const pieceMap={P:'wP',N:'wN',B:'wB',R:'wR',Q:'wQ',K:'wK',p:'bP',n:'bN',b:'bB',r:'bR',q:'bQ',k:'bK'};let lastBoardKey='';const pieceSvg={};"
+        "pieceSvg.wK=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#ffffff\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path stroke-linejoin=\"miter\" d=\"M22.5 11.63V6M20 8h5\"/><path fill=\"#ffffff\" stroke-linecap=\"butt\" stroke-linejoin=\"miter\" d=\"M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5\"/><path fill=\"#ffffff\" d=\"M11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V27v-3.5c-3.5-7.5-13-10.5-16-4-3 6 5 10 5 10z\"/><path d=\"M11.5 30c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0\"/></g></svg>`;"
+        "pieceSvg.wQ=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#ffffff\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path d=\"M8 12a2 2 0 1 1-4 0 2 2 0 1 1 4 0m16.5-4.5a2 2 0 1 1-4 0 2 2 0 1 1 4 0M41 12a2 2 0 1 1-4 0 2 2 0 1 1 4 0M16 8.5a2 2 0 1 1-4 0 2 2 0 1 1 4 0M33 9a2 2 0 1 1-4 0 2 2 0 1 1 4 0\"/><path stroke-linecap=\"butt\" d=\"M9 26c8.5-1.5 21-1.5 27 0l2-12-7 11V11l-5.5 13.5-3-15-3 15-5.5-14V25L7 14z\"/><path stroke-linecap=\"butt\" d=\"M9 26c0 2 1.5 2 2.5 4 1 1.5 1 1 .5 3.5-1.5 1-1.5 2.5-1.5 2.5-1.5 1.5.5 2.5.5 2.5 6.5 1 16.5 1 23 0 0 0 1.5-1 0-2.5 0 0 .5-1.5-1-2.5-.5-2.5-.5-2 .5-3.5 1-2 2.5-2 2.5-4-8.5-1.5-18.5-1.5-27 0z\"/><path fill=\"#ffffff\" d=\"M11.5 30c3.5-1 18.5-1 22 0M12 33.5c6-1 15-1 21 0\"/></g></svg>`;"
+        "pieceSvg.wR=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#ffffff\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path stroke-linecap=\"butt\" d=\"M9 39h27v-3H9zm3-3v-4h21v4zm-1-22V9h4v2h5V9h5v2h5V9h4v5\"/><path d=\"m34 14-3 3H14l-3-3\"/><path stroke-linecap=\"butt\" stroke-linejoin=\"miter\" d=\"M31 17v12.5H14V17\"/><path d=\"m31 29.5 1.5 2.5h-20l1.5-2.5\"/><path fill=\"#ffffff\" stroke-linejoin=\"miter\" d=\"M11 14h23\"/></g></svg>`;"
+        "pieceSvg.wB=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#ffffff\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><g fill=\"#ffffff\" stroke-linecap=\"butt\"><path d=\"M9 36c3.39-.97 10.11.43 13.5-2 3.39 2.43 10.11 1.03 13.5 2 0 0 1.65.54 3 2-.68.97-1.65.99-3 .5-3.39-.97-10.11.46-13.5-1-3.39 1.46-10.11.03-13.5 1-1.35.49-2.32.47-3-.5 1.35-1.94 3-2 3-2z\"/><path d=\"M15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2z\"/><path d=\"M25 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0z\"/></g><path stroke-linejoin=\"miter\" d=\"M17.5 26h10M15 30h15m-7.5-14.5v5M20 18h5\"/></g></svg>`;"
+        "pieceSvg.wN=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#ffffff\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path fill=\"#ffffff\" d=\"M22 10c10.5 1 16.5 8 16 29H15c0-9 10-6.5 8-21\"/><path fill=\"#ffffff\" d=\"M24 18c.38 2.91-5.55 7.37-8 9-3 2-2.82 4.34-5 4-1.042-.94 1.41-3.04 0-3-1 0 .19 1.23-1 2-1 0-4.003 1-4-4 0-2 6-12 6-12s1.89-1.9 2-3.5c-.73-.994-.5-2-.5-3 1-1 3 2.5 3 2.5h2s.78-1.992 2.5-3c1 0 1 3 1 3\"/><path fill=\"#000\" d=\"M9.5 25.5a.5.5 0 1 1-1 0 .5.5 0 1 1 1 0m5.433-9.75a.5 1.5 30 1 1-.866-.5.5 1.5 30 1 1 .866.5\"/></g></svg>`;"
+        "pieceSvg.wP=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><path fill=\"#ffffff\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M22.5 9c-2.21 0-4 1.79-4 4 0 .89.29 1.71.78 2.38C17.33 16.5 16 18.59 16 21c0 2.03.94 3.84 2.41 5.03-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47 1.47-1.19 2.41-3 2.41-5.03 0-2.41-1.33-4.5-3.28-5.62.49-.67.78-1.49.78-2.38 0-2.21-1.79-4-4-4z\"/></svg>`;"
+        "pieceSvg.bK=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#111111\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path stroke-linejoin=\"miter\" d=\"M22.5 11.6V6\"/><path fill=\"#111111\" stroke-linecap=\"butt\" stroke-linejoin=\"miter\" d=\"M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5\"/><path fill=\"#111111\" d=\"M11.5 37a22.3 22.3 0 0 0 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V27v-3.5c-3.5-7.5-13-10.5-16-4-3 6 5 10 5 10z\"/><path stroke-linejoin=\"miter\" d=\"M20 8h5\"/><path stroke=\"#ececec\" d=\"M32 29.5s8.5-4 6-9.7C34.1 14 25 18 22.5 24.6v2.1-2.1C20 18 9.9 14 7 19.9c-2.5 5.6 4.8 9 4.8 9\"/><path stroke=\"#ececec\" d=\"M11.5 30c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0\"/></g></svg>`;"
+        "pieceSvg.bQ=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><g stroke=\"none\"><circle cx=\"6\" cy=\"12\" r=\"2.75\"/><circle cx=\"14\" cy=\"9\" r=\"2.75\"/><circle cx=\"22.5\" cy=\"8\" r=\"2.75\"/><circle cx=\"31\" cy=\"9\" r=\"2.75\"/><circle cx=\"39\" cy=\"12\" r=\"2.75\"/></g><path stroke-linecap=\"butt\" d=\"M9 26c8.5-1.5 21-1.5 27 0l2.5-12.5L31 25l-.3-14.1-5.2 13.6-3-14.5-3 14.5-5.2-13.6L14 25 6.5 13.5z\"/><path stroke-linecap=\"butt\" d=\"M9 26c0 2 1.5 2 2.5 4 1 1.5 1 1 .5 3.5-1.5 1-1.5 2.5-1.5 2.5-1.5 1.5.5 2.5.5 2.5 6.5 1 16.5 1 23 0 0 0 1.5-1 0-2.5 0 0 .5-1.5-1-2.5-.5-2.5-.5-2 .5-3.5 1-2 2.5-2 2.5-4-8.5-1.5-18.5-1.5-27 0z\"/><path fill=\"#111111\" stroke-linecap=\"butt\" d=\"M11 38.5a35 35 1 0 0 23 0\"/><path fill=\"#111111\" stroke=\"#ececec\" d=\"M11 29a35 35 1 0 1 23 0m-21.5 2.5h20m-21 3a35 35 1 0 0 22 0m-23 3a35 35 1 0 0 24 0\"/></g></svg>`;"
+        "pieceSvg.bR=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path stroke-linecap=\"butt\" d=\"M9 39h27v-3H9zm3.5-7 1.5-2.5h17l1.5 2.5zm-.5 4v-4h21v4z\"/><path stroke-linecap=\"butt\" stroke-linejoin=\"miter\" d=\"M14 29.5v-13h17v13z\"/><path stroke-linecap=\"butt\" d=\"M14 16.5 11 14h23l-3 2.5zM11 14V9h4v2h5V9h5v2h5V9h4v5z\"/><path fill=\"#111111\" stroke=\"#ececec\" stroke-linejoin=\"miter\" stroke-width=\"1\" d=\"M12 35.5h21m-20-4h19m-18-2h17m-17-13h17M11 14h23\"/></g></svg>`;"
+        "pieceSvg.bB=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#111111\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><g fill=\"#111111\" stroke-linecap=\"butt\"><path d=\"M9 36c3.4-1 10.1.4 13.5-2 3.4 2.4 10.1 1 13.5 2 0 0 1.6.5 3 2-.7 1-1.6 1-3 .5-3.4-1-10.1.5-13.5-1-3.4 1.5-10.1 0-13.5 1-1.4.5-2.3.5-3-.5 1.4-2 3-2 3-2z\"/><path d=\"M15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2z\"/><path d=\"M25 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0z\"/></g><path stroke=\"#ececec\" stroke-linejoin=\"miter\" d=\"M17.5 26h10M15 30h15m-7.5-14.5v5M20 18h5\"/></g></svg>`;"
+        "pieceSvg.bN=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#111111\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path fill=\"#111111\" d=\"M22 10c10.5 1 16.5 8 16 29H15c0-9 10-6.5 8-21\"/><path fill=\"#111111\" d=\"M24 18c.38 2.91-5.55 7.37-8 9-3 2-2.82 4.34-5 4-1.04-.94 1.41-3.04 0-3-1 0 .19 1.23-1 2-1 0-4 1-4-4 0-2 6-12 6-12s1.89-1.9 2-3.5c-.73-1-.5-2-.5-3 1-1 3 2.5 3 2.5h2s.78-2 2.5-3c1 0 1 3 1 3\"/><path fill=\"#ececec\" stroke=\"#ececec\" d=\"M9.5 25.5a.5.5 0 1 1-1 0 .5.5 0 1 1 1 0m5.43-9.75a.5 1.5 30 1 1-.86-.5.5 1.5 30 1 1 .86.5\"/><path fill=\"#ececec\" stroke=\"none\" d=\"m24.55 10.4-.45 1.45.5.15c3.15 1 5.65 2.49 7.9 6.75S35.75 29.06 35.25 39l-.05.5h2.25l.05-.5c.5-10.06-.88-16.85-3.25-21.34s-5.79-6.64-9.19-7.16z\"/></g></svg>`;"
+        "pieceSvg.bP=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><path stroke=\"#111111\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M22.5 9a4 4 0 0 0-3.22 6.38 6.48 6.48 0 0 0-.87 10.65c-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47a6.46 6.46 0 0 0-.87-10.65A4.01 4.01 0 0 0 22.5 9z\"/></svg>`;"
         "function el(id){return document.getElementById(id);}function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el(id).classList.add('active');if(id==='configTab')loadConfig();}"
         "function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}"
         "async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}"
         "async function drawAction(action,side){let r=await fetch('/api/draw?action='+action+'&side='+side,{method:'POST'});el('drawInfo').textContent=await r.text();update();}"
-        "function virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}"
-        "function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8')x+=parseInt(ch);else{if(x===f)return ch;x++;}}return '';}function pieceHtml(fen,sq){let ch=cellPiece(fen,sq),asset=pieceMap[ch];return asset?'<img class=\"piece\" src=\"/piece/cburnett/'+asset+'.svg\" alt=\"'+ch+'\">':'';}"
+        "function virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}"        "function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8')x+=parseInt(ch);else{if(x===f)return ch;x++;}}return '';}function pieceHtml(fen,sq){let ch=cellPiece(fen,sq),asset=pieceMap[ch],svg=pieceSvg[asset],side=(ch>='A'&&ch<='Z')?'whitePiece':'blackPiece';return svg?'<span class=\"piece '+side+'\">'+svg+'</span>':'';}"
         "function setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}"
         "function hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}function fmtClock(ms){let t=Math.ceil((ms||0)/1000);let m=Math.floor(t/60);let sec=t%60;return m+':'+String(sec).padStart(2,'0');}"
         "async function loadConfig(){try{let c=await (await fetch('/api/config')).json();el('cfgInfractions').checked=!!c.infractions;el('cfgEmptyEnabled').checked=!!c.empty_enabled;el('cfgStockfishEnabled').checked=!!c.stockfish_enabled;el('cfgStockfishDepth').value=c.stockfish_depth;el('cfgClockMinutes').value=Math.floor((c.clock_initial_seconds||0)/60);el('cfgClockBonus').value=c.clock_bonus_seconds||0;el('cfgBrightness').value=c.brightness;el('brightnessText').textContent=c.brightness+'%';el('cfgEmpty').value=c.empty;el('cfgPiece').value=c.piece;el('cfgLifted').value=c.lifted;el('cfgLegal').value=c.legal;el('cfgBest').value=c.best;el('cfgInvalid').value=c.invalid;el('cfgCheck').value=c.check;el('cfgDraw').value=c.draw;el('configStatus').textContent='Loaded';}catch(e){el('configStatus').textContent='Config API unavailable';}}"
         "async function resetConfig(){let r=await fetch('/api/config?reset=1',{method:'POST'});el('configStatus').textContent=await r.text();await loadConfig();update();}async function saveConfig(){let p=new URLSearchParams();p.set('infractions',el('cfgInfractions').checked?'1':'0');p.set('empty_enabled',el('cfgEmptyEnabled').checked?'1':'0');p.set('stockfish_enabled',el('cfgStockfishEnabled').checked?'1':'0');p.set('stockfish_depth',el('cfgStockfishDepth').value);p.set('clock_initial_seconds',String((parseInt(el('cfgClockMinutes').value,10)||0)*60));p.set('clock_bonus_seconds',el('cfgClockBonus').value);p.set('brightness',el('cfgBrightness').value);p.set('empty',el('cfgEmpty').value.substring(1));p.set('piece',el('cfgPiece').value.substring(1));p.set('lifted',el('cfgLifted').value.substring(1));p.set('legal',el('cfgLegal').value.substring(1));p.set('best',el('cfgBest').value.substring(1));p.set('invalid',el('cfgInvalid').value.substring(1));p.set('check',el('cfgCheck').value.substring(1));p.set('draw',el('cfgDraw').value.substring(1));let r=await fetch('/api/config?'+p.toString(),{method:'POST'});el('configStatus').textContent=await r.text();update();}"
-        "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;if(isSetup){d.textContent=phys?'\\u25cf':(inv?sq:'');}else{d.innerHTML=pieceHtml(s.fen,virtualSq(s,sq));}let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('clock').innerHTML='<b>Clock</b><br>White: '+fmtClock(s.white_clock_ms)+'<br>Black: '+fmtClock(s.black_clock_ms)+'<br>Bonus: '+(s.clock_bonus_seconds||0)+'s/move';el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
+        "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';let boardKey=[s.mode,s.orientation,s.fen,s.selected,JSON.stringify(s.physical),JSON.stringify(s.turn),JSON.stringify(s.legal),JSON.stringify(s.best),JSON.stringify(s.invalid),JSON.stringify(s.check),JSON.stringify(s.setup_expected)].join('|');if(boardKey!==lastBoardKey){lastBoardKey=boardKey;b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;if(isSetup){d.textContent=phys?'\\u25cf':(inv?sq:'');}else{d.innerHTML=pieceHtml(s.fen,virtualSq(s,sq));}let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('clock').innerHTML='<b>Clock</b><br>White: '+fmtClock(s.white_clock_ms)+'<br>Black: '+fmtClock(s.black_clock_ms)+'<br>Bonus: '+(s.clock_bonus_seconds||0)+'s/move';el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
         "setInterval(update,500);update();loadConfig();"
         "</script></body></html>";
 
