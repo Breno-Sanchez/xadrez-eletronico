@@ -1,5 +1,11 @@
 # ESP32-S3 Electronic Chessboard — Technical Report
 
+<p align="center">
+  <a href="./README.md"><b>README</b></a> ·
+  <a href="./REPORT.md"><b>REPORT</b></a> ·
+  <a href="./LICENSE"><b>LICENSE</b></a>
+</p>
+
 **Project:** Electronic Chessboard  
 **Repository branch:** `Breno`  
 **Target platform:** ESP32-S3 with ESP-IDF v5.3.x  

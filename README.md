@@ -1,5 +1,11 @@
 # ESP32-S3 Electronic Chessboard
 
+<p align="center">
+  <a href="./README.md"><b>README</b></a> ·
+  <a href="./REPORT.md"><b>REPORT</b></a> ·
+  <a href="./LICENSE"><b>LICENSE</b></a>
+</p>
+
 Professional firmware for an ESP32-S3 electronic chessboard with reed-switch board sensing, addressable LED feedback, WPA2 Enterprise station networking, fixed SoftAP access, a local web interface, runtime configuration, and optional StockfishOnline move hints.
 
 The firmware is designed for a physical chessboard where magnetic pieces close reed switches under the squares. The ESP32-S3 maintains a virtual chess position, validates moves, renders board feedback through LEDs, and exposes the game state through a browser-accessible interface at `http://192.168.4.1/`.
