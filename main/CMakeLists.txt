@@ -10,6 +10,7 @@ else()
         "src/app/runtime_config.c"
         "src/chess/chess_logic.c"
         "src/chess/chess_engine.c"
+        "src/chess/historical_games.c"
         "src/drivers/led.c"
         "src/drivers/sensor.c"
         "src/game/server.c"
@@ -24,6 +25,7 @@ idf_component_register(
         "include"
     EMBED_TXTFILES
         "config.yaml"
+        "web/data/historical_plays.json"
     REQUIRES
         esp_wifi
         esp_event

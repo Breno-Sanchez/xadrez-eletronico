@@ -6,6 +6,7 @@
 
 #include "app_types.h"
 #include "chess_logic.h"
+#include "historical_games.h"
 #include "credentials.h"
 #include "esp_eap_client.h"
 #include "esp_err.h"
@@ -143,6 +144,10 @@ static uint32_t whiteClockMs = 0U;
 static uint32_t blackClockMs = 0U;
 static uint32_t clockLastTickMs = 0U;
 static uint8_t clockActive = 0U;
+static uint8_t historicalActive = 0U;
+static uint8_t historicalGameIndex = 0U;
+static uint16_t historicalPlyIndex = 0U;
+static uint8_t historicalCacheReady = 0U;
 
 static size_t boundedStringLength(const char * text, size_t maxLen);
 static void copyStringToU8(uint8_t * dst, size_t dstLen, const char * src);
@@ -174,6 +179,17 @@ static void requestStockfishBestAsync(void);
 static void refreshStockfishAdvisorAfterConfig(uint8_t wasEnabled);
 static void refreshStockfishBestMap(void);
 static void clearStockfishBest(void);
+static void clearPendingStockfishQueues(void);
+static const historical_game_t * historicalCurrentGame(void);
+static const historical_ply_t * historicalExpectedPly(void);
+static void historicalUpdateExpectedMaps(void);
+static void historicalComputeLiftHints(uint8_t row, uint8_t col);
+static bool historicalMoveMatches(const chess_move_t * move);
+static void historicalAdvanceAfterMove(void);
+static esp_err_t historicalStart(uint8_t index);
+static void historicalStop(void);
+static uint8_t historicalQueryIndex(const char * query);
+static void historicalSendJsonEscaped(httpd_req_t * req, const char * text);
 static bool isStockfishMoveText(const char * text);
 static void computeLiftHints(uint8_t row, uint8_t col);
 static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t promotion);
@@ -203,6 +219,291 @@ static esp_err_t apiStartHandler(httpd_req_t * req);
 static esp_err_t apiPromoteHandler(httpd_req_t * req);
 static esp_err_t apiDrawHandler(httpd_req_t * req);
 
+static const historical_game_t * historicalCurrentGame(void)
+{
+    if (historicalActive == 0U)
+    {
+        return NULL;
+    }
+
+    return historicalGameGet(historicalGameIndex);
+}
+
+static const historical_ply_t * historicalExpectedPly(void)
+{
+    const historical_game_t * current = historicalCurrentGame();
+
+    if ((current == NULL) || (historicalPlyIndex >= current->ply_count))
+    {
+        return NULL;
+    }
+
+    return &current->plies[historicalPlyIndex];
+}
+
+static void historicalUpdateExpectedMaps(void)
+{
+    const historical_game_t * current = historicalCurrentGame();
+    const historical_ply_t * ply = historicalExpectedPly();
+
+    (void)memset(bestMap, 0, sizeof(bestMap));
+
+    if ((current == NULL) || (ply == NULL))
+    {
+        (void)snprintf(stateBest, sizeof(stateBest), "-----");
+        return;
+    }
+
+    (void)snprintf(stateBest, sizeof(stateBest), "%.5s", ply->uci);
+    (void)snprintf(
+        stateLegal,
+        sizeof(stateLegal),
+        "Historical %u/%u: %s",
+        (unsigned int)(historicalPlyIndex + 1U),
+        (unsigned int)current->ply_count,
+        ply->san
+    );
+
+    if (orientationKnown != 0U)
+    {
+        setVirtualBit(bestMap, ply->move.from_row, ply->move.from_col);
+        setVirtualBit(bestMap, ply->move.to_row, ply->move.to_col);
+    }
+}
+
+static void historicalComputeLiftHints(uint8_t row, uint8_t col)
+{
+    const historical_ply_t * ply = historicalExpectedPly();
+
+    (void)memset(legalMap, 0, sizeof(legalMap));
+    historicalUpdateExpectedMaps();
+
+    if (ply == NULL)
+    {
+        return;
+    }
+
+    if ((row == ply->move.from_row) && (col == ply->move.from_col))
+    {
+        setVirtualBit(legalMap, ply->move.to_row, ply->move.to_col);
+        updateLegalTextFromMap();
+    }
+}
+
+static bool historicalMoveMatches(const chess_move_t * move)
+{
+    const historical_ply_t * ply = historicalExpectedPly();
+    bool match = true;
+
+    if ((historicalActive == 0U) || (move == NULL))
+    {
+        return true;
+    }
+
+    if (ply == NULL)
+    {
+        return false;
+    }
+
+    if ((move->from_row != ply->move.from_row) ||
+        (move->from_col != ply->move.from_col) ||
+        (move->to_row != ply->move.to_row) ||
+        (move->to_col != ply->move.to_col))
+    {
+        match = false;
+    }
+
+    if ((match == true) && (ply->move.promotion != CHESS_EMPTY))
+    {
+        if (move->promotion != CHESS_EMPTY)
+        {
+            match = (move->promotion == ply->move.promotion);
+        }
+    }
+    else if ((match == true) && (move->promotion != CHESS_EMPTY))
+    {
+        match = false;
+    }
+
+    return match;
+}
+
+static void historicalAdvanceAfterMove(void)
+{
+    const historical_game_t * current = historicalCurrentGame();
+
+    if ((historicalActive == 0U) || (current == NULL))
+    {
+        return;
+    }
+
+    if (historicalPlyIndex < current->ply_count)
+    {
+        historicalPlyIndex++;
+    }
+
+    if (historicalPlyIndex >= current->ply_count)
+    {
+        historicalActive = 0U;
+        clockActive = 0U;
+        clearMaps();
+        (void)snprintf(stateBest, sizeof(stateBest), "-----");
+        (void)snprintf(stateLegal, sizeof(stateLegal), "Historical play complete: %s", current->result);
+        setMode(GAME_MODE_DRAW_LOCK, "HISTORICAL_COMPLETE");
+        ESP_LOGI(TAG, "HISTORICAL_COMPLETE index=%u result=%s", (unsigned int)historicalGameIndex, current->result);
+    }
+    else
+    {
+        const historical_ply_t * nextPly;
+
+        historicalUpdateExpectedMaps();
+        nextPly = historicalExpectedPly();
+
+        ESP_LOGI(
+            TAG,
+            "HISTORICAL_NEXT index=%u ply=%u expected=%s san=%s",
+            (unsigned int)historicalGameIndex,
+            (unsigned int)historicalPlyIndex,
+            (nextPly != NULL) ? nextPly->uci : "-",
+            (nextPly != NULL) ? nextPly->san : "-"
+        );
+    }
+}
+
+static void historicalStop(void)
+{
+    historicalActive = 0U;
+    historicalPlyIndex = 0U;
+    historicalGameIndex = 0U;
+    stockfishRequestSequence++;
+    clearPendingStockfishQueues();
+    clearMaps();
+    clearStockfishBest();
+    (void)snprintf(stateLegal, sizeof(stateLegal), "-");
+    sendLedFrame(0U);
+}
+
+static esp_err_t historicalStart(uint8_t index)
+{
+    const historical_game_t * selected = historicalGameGet(index);
+
+    if (selected == NULL)
+    {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    historicalActive = 0U;
+    historicalGameIndex = index;
+    historicalPlyIndex = 0U;
+
+    clearMaps();
+    selectedValid = 0U;
+    selectedSquare[0] = '\0';
+    pendingPromotionValid = 0U;
+    winnerWhite = 0U;
+    whiteInfractions = 0U;
+    blackInfractions = 0U;
+    drawOfferActive = 0U;
+    drawOfferByWhite = 0U;
+    clearCapturedMaterial();
+
+    if (physicalMatchesStart() == false)
+    {
+        setMode(GAME_MODE_SETUP, "SETUP_NOT_READY");
+        updateSetupFeedback();
+        sendLedFrame(0U);
+        return ESP_FAIL;
+    }
+
+    chess_reset(&game);
+    clockResetForNewGame();
+    orientationKnown = 1U;
+    orientationFlipRanks = 0U;
+
+    historicalActive = 1U;
+    stockfishRequestSequence++;
+    clearPendingStockfishQueues();
+    clearStockfishBest();
+
+    setMode(GAME_MODE_RUNNING, "HISTORICAL_PLAY");
+    historicalUpdateExpectedMaps();
+    sendLedFrame(0U);
+
+    ESP_LOGI(
+        TAG,
+        "HISTORICAL_START index=%u title=%s plies=%u",
+        (unsigned int)index,
+        selected->title,
+        (unsigned int)selected->ply_count
+    );
+
+    return ESP_OK;
+}
+
+
+static uint8_t historicalQueryIndex(const char * query)
+{
+    char value[8];
+    uint16_t index = 0U;
+
+    value[0] = '\0';
+
+    if ((query != NULL) &&
+        (httpd_query_key_value(query, "index", value, sizeof(value)) == ESP_OK))
+    {
+        for (uint8_t i = 0U; value[i] != '\0'; i++)
+        {
+            if ((value[i] >= '0') && (value[i] <= '9'))
+            {
+                index = (uint16_t)((index * 10U) + (uint16_t)(value[i] - '0'));
+            }
+        }
+    }
+
+    if (index > 255U)
+    {
+        index = 255U;
+    }
+
+    return (uint8_t)index;
+}
+
+static void historicalSendJsonEscaped(httpd_req_t * req, const char * text)
+{
+    char escaped[3];
+
+    if ((req == NULL) || (text == NULL))
+    {
+        return;
+    }
+
+    for (size_t i = 0U; text[i] != '\0'; i++)
+    {
+        char ch = text[i];
+
+        if ((ch == '"') || (ch == '\\'))
+        {
+            escaped[0] = '\\';
+            escaped[1] = ch;
+            escaped[2] = '\0';
+            (void)httpd_resp_sendstr_chunk(req, escaped);
+        }
+        else if (ch == '\n')
+        {
+            (void)httpd_resp_sendstr_chunk(req, "\\n");
+        }
+        else
+        {
+            escaped[0] = ch;
+            escaped[1] = '\0';
+            (void)httpd_resp_sendstr_chunk(req, escaped);
+        }
+    }
+}
+
+
+static esp_err_t apiHistoricalHandler(httpd_req_t * req);
+
 
 static const httpd_uri_t rootUri = {
  .uri = "/", .method = HTTP_GET, .handler = rootHandler, .user_ctx = NULL };
@@ -213,6 +514,8 @@ static const httpd_uri_t configPostUri = { .uri = "/api/config", .method = HTTP_
 static const httpd_uri_t startUri = { .uri = "/api/start", .method = HTTP_POST, .handler = apiStartHandler, .user_ctx = NULL };
 static const httpd_uri_t promoteUri = { .uri = "/api/promote", .method = HTTP_POST, .handler = apiPromoteHandler, .user_ctx = NULL };
 static const httpd_uri_t drawUri = { .uri = "/api/draw", .method = HTTP_POST, .handler = apiDrawHandler, .user_ctx = NULL };
+static const httpd_uri_t historicalGetUri = { .uri = "/api/historical", .method = HTTP_GET, .handler = apiHistoricalHandler, .user_ctx = NULL };
+static const httpd_uri_t historicalPostUri = { .uri = "/api/historical", .method = HTTP_POST, .handler = apiHistoricalHandler, .user_ctx = NULL };
 
 static size_t boundedStringLength(const char * text, size_t maxLen)
 {
@@ -1217,7 +1520,7 @@ static void requestStockfishBestAsync(void)
 {
     stockfish_request_t request;
 
-    if ((stockfishRequestQueue == NULL) || (gameMode != GAME_MODE_RUNNING))
+    if ((stockfishRequestQueue == NULL) || (gameMode != GAME_MODE_RUNNING) || (historicalActive != 0U))
     {
         return;
     }
@@ -1353,6 +1656,12 @@ static void computeLiftHints(uint8_t row, uint8_t col)
 
     clearMaps();
 
+    if (historicalActive != 0U)
+    {
+        historicalComputeLiftHints(row, col);
+        return;
+    }
+
     count = chess_generate_legal_moves_from(&game, row, col, moves, CHESS_MAX_MOVES);
 
     for (uint32_t i = 0U; i < count; i++)
@@ -1454,6 +1763,12 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
         return true;
     }
 
+    if ((historicalActive != 0U) && (historicalMoveMatches(&move) == false))
+    {
+        ESP_LOGW(TAG, "MOVE_REJECT reason=HISTORICAL_EXPECTED expected=%s physical=%s->%s virtual=%s->%s", (historicalExpectedPly() != NULL) ? historicalExpectedPly()->uci : "-", selectedSquare, toPhysical, fromText, toText);
+        return false;
+    }
+
     if (chess_is_legal_move(&game, &move) == false)
     {
         ESP_LOGW(TAG, "MOVE_REJECT reason=RULE_ENGINE physical=%s->%s virtual=%s->%s fen=%s", selectedSquare, toPhysical, fromText, toText, game.fen);
@@ -1497,7 +1812,11 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
 
     updatePostMoveTerminalState();
 
-    if (gameMode == GAME_MODE_RUNNING)
+    if (historicalActive != 0U)
+    {
+        historicalAdvanceAfterMove();
+    }
+    else if (gameMode == GAME_MODE_RUNNING)
     {
         /* BEST_REQUEST_AFTER_MOVE */
         requestStockfishBestAsync();
@@ -1510,6 +1829,12 @@ static bool applySelectedMove(uint8_t toRow, uint8_t toCol, chess_piece_type_t p
 
 static void startGame(void)
 {
+    historicalActive = 0U;
+    historicalPlyIndex = 0U;
+    historicalGameIndex = 0U;
+    stockfishRequestSequence++;
+    clearPendingStockfishQueues();
+    clearStockfishBest();
     clearMaps();
     selectedValid = 0U;
     selectedSquare[0] = '\0';
@@ -2227,7 +2552,7 @@ static esp_err_t startHttpServer(void)
     if (httpServer == NULL)
     {
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-        config.stack_size = 12288U;
+        config.stack_size = 16384U;
         config.lru_purge_enable = true;
         config.max_uri_handlers = 16U;
         config.recv_wait_timeout = 5;
@@ -2242,6 +2567,8 @@ static esp_err_t startHttpServer(void)
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &startUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &drawUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &promoteUri);
+        if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &historicalGetUri);
+        if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &historicalPostUri);
 
         if (err == ESP_OK)
         {
@@ -2277,7 +2604,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         ".small{font-size:13px;color:#b8c4d6}.side button{display:block;width:100%;margin:6px 0}"
         "</style></head><body>"
         "<h1>ESP32-S3 Electronic Chessboard</h1>"
-        "<div class=\"tabs\"><button onclick=\"showTab('boardTab')\">Board</button><button onclick=\"showTab('configTab')\">Configuration</button></div>"
+        "<div class=\"tabs\"><button onclick=\"showTab('boardTab')\">Board</button><button onclick=\"showTab('historicalTab')\">Historical Plays</button><button onclick=\"showTab('configTab')\">Configuration</button></div>"
         "<div id=\"boardTab\" class=\"tab active\">"
         "<div><button onclick=\"startGame()\">Start</button><button onclick=\"promote('Q')\">Queen</button><button onclick=\"promote('R')\">Rook</button><button onclick=\"promote('B')\">Bishop</button><button onclick=\"promote('N')\">Knight</button></div>"
         "<div id=\"drawInfo\" class=\"box drawState\">No active draw offer.</div><div id=\"clock\" class=\"box clockState\">Clock unavailable</div>"
@@ -2287,7 +2614,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "<div class=\"side\"><h3>Black draw</h3><button onclick=\"drawAction('propose','black')\">Propose draw</button><button onclick=\"drawAction('accept','black')\">Accept white offer</button><button onclick=\"drawAction('reject','black')\">Reject white offer</button></div>"
         "<div><div class=\"box\" id=\"info\"></div><div class=\"box score\" id=\"captures\"></div><div class=\"box\" id=\"setup\"></div><div class=\"box fen\" id=\"fen\"></div><div class=\"box fen\" id=\"pgn\"></div><div class=\"box fen\" id=\"stockfish\"></div></div>"
         "</div></div>"
-        "<div id=\"configTab\" class=\"tab\">"
+        "<div id=\"historicalTab\" class=\"tab\"><div class=\"box\"><h2>Historical Plays</h2><p>Select a legendary game. The board will guide the exact PGN move sequence with LEDs. Any different move is rejected as invalid.</p><select id=\"historicalSelect\" style=\"min-width:320px;font-size:16px;padding:8px\"></select><button onclick=\"startHistorical()\">Start historical play</button><button onclick=\"stopHistorical()\">Stop historical mode</button><button onclick=\"loadHistorical()\">Reload</button><div id=\"historicalStatus\" class=\"box fen\">Historical data not loaded.</div></div></div><div id=\"configTab\" class=\"tab\">"
         "<div class=\"box\"><h2>Runtime configuration</h2><div class=\"grid\">"
         "<label>Invalid-position infractions</label><input id=\"cfgInfractions\" type=\"checkbox\"><label>Empty square LEDs</label><input id=\"cfgEmptyEnabled\" type=\"checkbox\"><label>StockfishOnline advisor</label><input id=\"cfgStockfishEnabled\" type=\"checkbox\"><label>Stockfish depth</label><select id=\"cfgStockfishDepth\"><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select><label>Clock time (minutes)</label><input id=\"cfgClockMinutes\" type=\"number\" min=\"0\" max=\"360\" value=\"5\"><label>Move bonus (seconds)</label><input id=\"cfgClockBonus\" type=\"number\" min=\"0\" max=\"600\" value=\"0\">"
         "<label>LED brightness</label><input id=\"cfgBrightness\" type=\"range\" min=\"0\" max=\"100\" oninput=\"document.getElementById('brightnessText').textContent=this.value+'%'\">"
@@ -2316,8 +2643,9 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "pieceSvg.bB=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#111111\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><g fill=\"#111111\" stroke-linecap=\"butt\"><path d=\"M9 36c3.4-1 10.1.4 13.5-2 3.4 2.4 10.1 1 13.5 2 0 0 1.6.5 3 2-.7 1-1.6 1-3 .5-3.4-1-10.1.5-13.5-1-3.4 1.5-10.1 0-13.5 1-1.4.5-2.3.5-3-.5 1.4-2 3-2 3-2z\"/><path d=\"M15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2z\"/><path d=\"M25 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0z\"/></g><path stroke=\"#ececec\" stroke-linejoin=\"miter\" d=\"M17.5 26h10M15 30h15m-7.5-14.5v5M20 18h5\"/></g></svg>`;"
         "pieceSvg.bN=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><g fill=\"#111111\" fill-rule=\"evenodd\" stroke=\"#111111\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"><path fill=\"#111111\" d=\"M22 10c10.5 1 16.5 8 16 29H15c0-9 10-6.5 8-21\"/><path fill=\"#111111\" d=\"M24 18c.38 2.91-5.55 7.37-8 9-3 2-2.82 4.34-5 4-1.04-.94 1.41-3.04 0-3-1 0 .19 1.23-1 2-1 0-4 1-4-4 0-2 6-12 6-12s1.89-1.9 2-3.5c-.73-1-.5-2-.5-3 1-1 3 2.5 3 2.5h2s.78-2 2.5-3c1 0 1 3 1 3\"/><path fill=\"#ececec\" stroke=\"#ececec\" d=\"M9.5 25.5a.5.5 0 1 1-1 0 .5.5 0 1 1 1 0m5.43-9.75a.5 1.5 30 1 1-.86-.5.5 1.5 30 1 1 .86.5\"/><path fill=\"#ececec\" stroke=\"none\" d=\"m24.55 10.4-.45 1.45.5.15c3.15 1 5.65 2.49 7.9 6.75S35.75 29.06 35.25 39l-.05.5h2.25l.05-.5c.5-10.06-.88-16.85-3.25-21.34s-5.79-6.64-9.19-7.16z\"/></g></svg>`;"
         "pieceSvg.bP=`<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 45 45\"><path stroke=\"#111111\" stroke-linecap=\"round\" stroke-width=\"1.5\" d=\"M22.5 9a4 4 0 0 0-3.22 6.38 6.48 6.48 0 0 0-.87 10.65c-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47a6.46 6.46 0 0 0-.87-10.65A4.01 4.01 0 0 0 22.5 9z\"/></svg>`;"
-        "function el(id){return document.getElementById(id);}function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el(id).classList.add('active');if(id==='configTab')loadConfig();}"
+        "function el(id){return document.getElementById(id);}function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el(id).classList.add('active');if(id==='configTab')loadConfig();if(id==='historicalTab')loadHistorical();}"
         "function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}"
+        "async function loadHistorical(){try{let h=await (await fetch('/api/historical')).json();let sel=el('historicalSelect');sel.innerHTML='';for(const g of h.games){let o=document.createElement('option');o.value=g.index;o.textContent=(g.index+1)+'. '+g.title+' ['+g.plies+' plies]';sel.appendChild(o);}if(h.active){sel.value=h.index;}el('historicalStatus').innerHTML='<b>Mode:</b> '+(h.active?'active':'inactive')+'<br><b>Game:</b> '+(h.title||'-')+'<br><b>Ply:</b> '+h.ply+'/'+h.total+'<br><b>Expected:</b> '+(h.expected||'-')+' '+(h.san||'');}catch(e){el('historicalStatus').textContent='Historical API unavailable';}}async function startHistorical(){let idx=el('historicalSelect').value||0;let r=await fetch('/api/historical?action=start&index='+idx,{method:'POST'});el('historicalStatus').textContent=await r.text();await loadHistorical();update();}async function stopHistorical(){let r=await fetch('/api/historical?action=stop',{method:'POST'});el('historicalStatus').textContent=await r.text();await loadHistorical();update();}"
         "async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}"
         "async function drawAction(action,side){let r=await fetch('/api/draw?action='+action+'&side='+side,{method:'POST'});el('drawInfo').textContent=await r.text();update();}"
         "function virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}"        "function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8')x+=parseInt(ch);else{if(x===f)return ch;x++;}}return '';}function pieceHtml(fen,sq){let ch=cellPiece(fen,sq),asset=pieceMap[ch],svg=pieceSvg[asset],side=(ch>='A'&&ch<='Z')?'whitePiece':'blackPiece';return svg?'<span class=\"piece '+side+'\">'+svg+'</span>':'';}"
@@ -2326,7 +2654,7 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "async function loadConfig(){try{let c=await (await fetch('/api/config')).json();el('cfgInfractions').checked=!!c.infractions;el('cfgEmptyEnabled').checked=!!c.empty_enabled;el('cfgStockfishEnabled').checked=!!c.stockfish_enabled;el('cfgStockfishDepth').value=c.stockfish_depth;el('cfgClockMinutes').value=Math.floor((c.clock_initial_seconds||0)/60);el('cfgClockBonus').value=c.clock_bonus_seconds||0;el('cfgBrightness').value=c.brightness;el('brightnessText').textContent=c.brightness+'%';el('cfgEmpty').value=c.empty;el('cfgPiece').value=c.piece;el('cfgLifted').value=c.lifted;el('cfgLegal').value=c.legal;el('cfgBest').value=c.best;el('cfgInvalid').value=c.invalid;el('cfgCheck').value=c.check;el('cfgDraw').value=c.draw;el('configStatus').textContent='Loaded';}catch(e){el('configStatus').textContent='Config API unavailable';}}"
         "async function resetConfig(){let r=await fetch('/api/config?reset=1',{method:'POST'});el('configStatus').textContent=await r.text();await loadConfig();update();}async function saveConfig(){let p=new URLSearchParams();p.set('infractions',el('cfgInfractions').checked?'1':'0');p.set('empty_enabled',el('cfgEmptyEnabled').checked?'1':'0');p.set('stockfish_enabled',el('cfgStockfishEnabled').checked?'1':'0');p.set('stockfish_depth',el('cfgStockfishDepth').value);p.set('clock_initial_seconds',String((parseInt(el('cfgClockMinutes').value,10)||0)*60));p.set('clock_bonus_seconds',el('cfgClockBonus').value);p.set('brightness',el('cfgBrightness').value);p.set('empty',el('cfgEmpty').value.substring(1));p.set('piece',el('cfgPiece').value.substring(1));p.set('lifted',el('cfgLifted').value.substring(1));p.set('legal',el('cfgLegal').value.substring(1));p.set('best',el('cfgBest').value.substring(1));p.set('invalid',el('cfgInvalid').value.substring(1));p.set('check',el('cfgCheck').value.substring(1));p.set('draw',el('cfgDraw').value.substring(1));let r=await fetch('/api/config?'+p.toString(),{method:'POST'});el('configStatus').textContent=await r.text();update();}"
         "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';let boardKey=[s.mode,s.orientation,s.fen,s.selected,JSON.stringify(s.physical),JSON.stringify(s.turn),JSON.stringify(s.legal),JSON.stringify(s.best),JSON.stringify(s.invalid),JSON.stringify(s.check),JSON.stringify(s.setup_expected)].join('|');if(boardKey!==lastBoardKey){lastBoardKey=boardKey;b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;if(isSetup){d.textContent=phys?'\\u25cf':(inv?sq:'');}else{d.innerHTML=pieceHtml(s.fen,virtualSq(s,sq));}let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('clock').innerHTML='<b>Clock</b><br>White: '+fmtClock(s.white_clock_ms)+'<br>Black: '+fmtClock(s.black_clock_ms)+'<br>Bonus: '+(s.clock_bonus_seconds||0)+'s/move';el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
-        "setInterval(update,500);update();loadConfig();"
+        "setInterval(update,500);update();loadConfig();loadHistorical();"
         "</script></body></html>";
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -2776,6 +3104,150 @@ static esp_err_t apiStateHandler(httpd_req_t * req)
 
 
 
+
+static esp_err_t apiHistoricalHandler(httpd_req_t * req)
+{
+    char query[128];
+    char action[16];
+    char chunk[256];
+    BaseType_t mutexTaken = pdFALSE;
+
+    if (req == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    query[0] = '\0';
+    action[0] = '\0';
+
+    if (historicalCacheReady == 0U)
+    {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        return httpd_resp_sendstr(req, "{\"active\":0,\"index\":0,\"ply\":0,\"total\":0,\"expected\":\"\",\"san\":\"\",\"title\":\"\",\"games\":[],\"error\":\"historical_loading\"}");
+    }
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        (void)httpd_query_key_value(query, "action", action, sizeof(action));
+    }
+
+    if (req->method == HTTP_POST)
+    {
+        esp_err_t op = ESP_OK;
+
+        if (stateMutex != NULL)
+        {
+            mutexTaken = xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U));
+        }
+
+        if (mutexTaken != pdPASS)
+        {
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"state_lock_timeout\"}");
+        }
+
+        if (strcmp(action, "start") == 0)
+        {
+            op = historicalStart(historicalQueryIndex(query));
+        }
+        else if (strcmp(action, "stop") == 0)
+        {
+            historicalStop();
+            op = ESP_OK;
+        }
+        else
+        {
+            op = ESP_ERR_INVALID_ARG;
+        }
+
+        (void)xSemaphoreGive(stateMutex);
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+
+        if (op == ESP_OK)
+        {
+            return httpd_resp_sendstr(req, "{\"ok\":true}");
+        }
+
+        if (op == ESP_ERR_NOT_FOUND)
+        {
+            return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"game_not_found\"}");
+        }
+
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"historical_start_failed\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+
+    if (stateMutex != NULL)
+    {
+        mutexTaken = xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U));
+    }
+
+    if (mutexTaken != pdPASS)
+    {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"state_lock_timeout\"}");
+    }
+
+    const historical_game_t * current = historicalCurrentGame();
+    const historical_ply_t * expected = historicalExpectedPly();
+    uint8_t count = historicalGamesCount();
+
+    (void)snprintf(
+        chunk,
+        sizeof(chunk),
+        "{\"active\":%u,\"index\":%u,\"ply\":%u,\"total\":%u,\"expected\":\"%s\",\"san\":\"%s\",\"title\":\"",
+        (unsigned int)historicalActive,
+        (unsigned int)historicalGameIndex,
+        (unsigned int)historicalPlyIndex,
+        (unsigned int)((current != NULL) ? current->ply_count : 0U),
+        (expected != NULL) ? expected->uci : "",
+        (expected != NULL) ? expected->san : ""
+    );
+    (void)httpd_resp_sendstr_chunk(req, chunk);
+    historicalSendJsonEscaped(req, (current != NULL) ? current->title : "");
+    (void)httpd_resp_sendstr_chunk(req, "\",\"games\":[");
+
+    for (uint8_t i = 0U; i < count; i++)
+    {
+        const historical_game_t * item = historicalGameGet(i);
+
+        if (item == NULL)
+        {
+            continue;
+        }
+
+        if (i > 0U)
+        {
+            (void)httpd_resp_sendstr_chunk(req, ",");
+        }
+
+        (void)snprintf(
+            chunk,
+            sizeof(chunk),
+            "{\"index\":%u,\"plies\":%u,\"result\":\"%s\",\"title\":\"",
+            (unsigned int)i,
+            (unsigned int)item->ply_count,
+            item->result
+        );
+        (void)httpd_resp_sendstr_chunk(req, chunk);
+        historicalSendJsonEscaped(req, item->title);
+        (void)httpd_resp_sendstr_chunk(req, "\"}");
+    }
+
+    (void)httpd_resp_sendstr_chunk(req, "]}");
+    (void)httpd_resp_sendstr_chunk(req, NULL);
+
+    (void)xSemaphoreGive(stateMutex);
+    return ESP_OK;
+}
+
+
 static esp_err_t apiStartHandler(httpd_req_t * req)
 {
     game_command_t command;
@@ -2943,6 +3415,17 @@ void serverTask(void * parameters)
     (void)parameters;
     ESP_LOGI(TAG, "Chess controller started in setup mode");
     sendLedFrame(0U);
+
+    if (historicalGamesInit() == ESP_OK)
+    {
+        historicalCacheReady = 1U;
+        ESP_LOGI(TAG, "HISTORICAL_READY games=%u", (unsigned int)historicalGamesCount());
+    }
+    else
+    {
+        historicalCacheReady = 0U;
+        ESP_LOGE(TAG, "HISTORICAL_LOAD_FAILED");
+    }
 
     for (;;)
     {
