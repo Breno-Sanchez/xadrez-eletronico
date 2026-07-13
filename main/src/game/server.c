@@ -196,12 +196,63 @@ static esp_err_t initEnterpriseAuth(const wifi_enterprise_credentials_t * creden
 static void eventHandler(void * arg, esp_event_base_t base, int32_t id, void * data);
 static esp_err_t startHttpServer(void);
 static esp_err_t rootHandler(httpd_req_t * req);
+static esp_err_t pieceAssetHandler(httpd_req_t * req);
 static esp_err_t apiStateHandler(httpd_req_t * req);
 static esp_err_t apiStockfishHandler(httpd_req_t * req);
 static esp_err_t apiConfigHandler(httpd_req_t * req);
 static esp_err_t apiStartHandler(httpd_req_t * req);
 static esp_err_t apiPromoteHandler(httpd_req_t * req);
 static esp_err_t apiDrawHandler(httpd_req_t * req);
+
+
+extern const uint8_t _binary_wK_svg_start[] asm("_binary_wK_svg_start");
+extern const uint8_t _binary_wK_svg_end[] asm("_binary_wK_svg_end");
+extern const uint8_t _binary_wQ_svg_start[] asm("_binary_wQ_svg_start");
+extern const uint8_t _binary_wQ_svg_end[] asm("_binary_wQ_svg_end");
+extern const uint8_t _binary_wR_svg_start[] asm("_binary_wR_svg_start");
+extern const uint8_t _binary_wR_svg_end[] asm("_binary_wR_svg_end");
+extern const uint8_t _binary_wB_svg_start[] asm("_binary_wB_svg_start");
+extern const uint8_t _binary_wB_svg_end[] asm("_binary_wB_svg_end");
+extern const uint8_t _binary_wN_svg_start[] asm("_binary_wN_svg_start");
+extern const uint8_t _binary_wN_svg_end[] asm("_binary_wN_svg_end");
+extern const uint8_t _binary_wP_svg_start[] asm("_binary_wP_svg_start");
+extern const uint8_t _binary_wP_svg_end[] asm("_binary_wP_svg_end");
+extern const uint8_t _binary_bK_svg_start[] asm("_binary_bK_svg_start");
+extern const uint8_t _binary_bK_svg_end[] asm("_binary_bK_svg_end");
+extern const uint8_t _binary_bQ_svg_start[] asm("_binary_bQ_svg_start");
+extern const uint8_t _binary_bQ_svg_end[] asm("_binary_bQ_svg_end");
+extern const uint8_t _binary_bR_svg_start[] asm("_binary_bR_svg_start");
+extern const uint8_t _binary_bR_svg_end[] asm("_binary_bR_svg_end");
+extern const uint8_t _binary_bB_svg_start[] asm("_binary_bB_svg_start");
+extern const uint8_t _binary_bB_svg_end[] asm("_binary_bB_svg_end");
+extern const uint8_t _binary_bN_svg_start[] asm("_binary_bN_svg_start");
+extern const uint8_t _binary_bN_svg_end[] asm("_binary_bN_svg_end");
+extern const uint8_t _binary_bP_svg_start[] asm("_binary_bP_svg_start");
+extern const uint8_t _binary_bP_svg_end[] asm("_binary_bP_svg_end");
+
+typedef struct
+{
+    const char * uri;
+    const uint8_t * start;
+    const uint8_t * end;
+} piece_asset_t;
+
+static const piece_asset_t pieceAssets[] = {
+    { "/piece/cburnett/wK.svg", _binary_wK_svg_start, _binary_wK_svg_end },
+    { "/piece/cburnett/wQ.svg", _binary_wQ_svg_start, _binary_wQ_svg_end },
+    { "/piece/cburnett/wR.svg", _binary_wR_svg_start, _binary_wR_svg_end },
+    { "/piece/cburnett/wB.svg", _binary_wB_svg_start, _binary_wB_svg_end },
+    { "/piece/cburnett/wN.svg", _binary_wN_svg_start, _binary_wN_svg_end },
+    { "/piece/cburnett/wP.svg", _binary_wP_svg_start, _binary_wP_svg_end },
+    { "/piece/cburnett/bK.svg", _binary_bK_svg_start, _binary_bK_svg_end },
+    { "/piece/cburnett/bQ.svg", _binary_bQ_svg_start, _binary_bQ_svg_end },
+    { "/piece/cburnett/bR.svg", _binary_bR_svg_start, _binary_bR_svg_end },
+    { "/piece/cburnett/bB.svg", _binary_bB_svg_start, _binary_bB_svg_end },
+    { "/piece/cburnett/bN.svg", _binary_bN_svg_start, _binary_bN_svg_end },
+    { "/piece/cburnett/bP.svg", _binary_bP_svg_start, _binary_bP_svg_end }
+};
+
+static const httpd_uri_t pieceAssetUri = { .uri = "/piece/cburnett/*", .method = HTTP_GET, .handler = pieceAssetHandler, .user_ctx = NULL };
 
 static const httpd_uri_t rootUri = {
  .uri = "/", .method = HTTP_GET, .handler = rootHandler, .user_ctx = NULL };
@@ -2230,9 +2281,11 @@ static esp_err_t startHttpServer(void)
         config.lru_purge_enable = true;
         config.recv_wait_timeout = 5;
         config.send_wait_timeout = 5;
+        config.uri_match_fn = httpd_uri_match_wildcard;
 
         err = httpd_start(&httpServer, &config);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &rootUri);
+        if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &pieceAssetUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stateUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &stockfishUri);
         if (err == ESP_OK) err = httpd_register_uri_handler(httpServer, &configGetUri);
@@ -2250,6 +2303,35 @@ static esp_err_t startHttpServer(void)
     return err;
 }
 
+
+static esp_err_t pieceAssetHandler(httpd_req_t * req)
+{
+    size_t index;
+
+    if (req == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (index = 0U; index < (sizeof(pieceAssets) / sizeof(pieceAssets[0])); index++)
+    {
+        if (strcmp(req->uri, pieceAssets[index].uri) == 0)
+        {
+            const uint8_t * start = pieceAssets[index].start;
+            const uint8_t * end = pieceAssets[index].end;
+            size_t len = (size_t)(end - start);
+
+            httpd_resp_set_type(req, "image/svg+xml");
+            httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
+            return httpd_resp_send(req, (const char *)start, len);
+        }
+    }
+
+    httpd_resp_set_status(req, "404 Not Found");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "piece asset not found");
+}
+
 static esp_err_t rootHandler(httpd_req_t * req)
 {
     static const char html[] =
@@ -2261,9 +2343,9 @@ static esp_err_t rootHandler(httpd_req_t * req)
         ".tabs{display:flex;gap:0;margin-bottom:0}.tabs button{border-radius:8px 8px 0 0;border:1px solid #344052;border-bottom:0;background:#1d2430;color:#eee}.tab{display:none}.tab.active{display:block;border:1px solid #344052;border-top:0;background:#141a24;padding:12px;border-radius:0 8px 8px 8px}"
         "button{font-size:17px;margin:4px;padding:9px 13px;border-radius:8px;border:0;cursor:pointer;background:#d7dce8;color:#111}"
         ".layout{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}.side{background:#1d2430;padding:10px;border-radius:8px}"
-        ".board{display:grid;grid-template-columns:repeat(8,58px);grid-template-rows:repeat(8,58px);border:5px solid #222;background:#222}"
-        ".sq{width:58px;height:58px;display:flex;align-items:center;justify-content:center;font-size:32px;box-sizing:border-box;position:relative;font-weight:700}"
-        ".light{background:#d9c09b;color:#111}.dark{background:#73543a;color:#111}.coord{position:absolute;right:3px;bottom:2px;font-size:10px;opacity:.75}"
+        ".board{display:grid;grid-template-columns:repeat(8,58px);grid-template-rows:repeat(8,58px);border:6px solid #2b2118;background:#2b2118;border-radius:10px;overflow:hidden;box-shadow:0 14px 40px #0009}"
+        ".sq{width:58px;height:58px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;position:relative;font-weight:700}"
+        ".piece{width:88%;height:88%;display:block;filter:drop-shadow(0 3px 2px #0008);pointer-events:none;user-select:none}.light{background:#f0d9b5;color:#111}.dark{background:#b58863;color:#111}.coord{position:absolute;right:3px;bottom:2px;font-size:10px;opacity:.75}"
         ".phys{box-shadow:inset 0 0 0 5px #285dff}.turn{box-shadow:inset 0 0 0 7px #4ba3ff}.setupok{background:#064ec9!important;color:#fff}"
         ".legal{background:#d8c52f!important;color:#111}.best{background:#0b9f39!important;color:#fff}.invalid,.check{background:#c01818!important;color:#fff;box-shadow:inset 0 0 0 5px #ffb0b0}"
         ".sel{animation:blink .7s infinite}@keyframes blink{50%{filter:brightness(1.8)}}"
@@ -2300,18 +2382,18 @@ static esp_err_t rootHandler(httpd_req_t * req)
         "</div><br><button onclick=\"saveConfig()\">Save configuration</button><button onclick=\"resetConfig()\">Default configuration</button><button onclick=\"loadConfig()\">Reload</button>"
         "<div id=\"configStatus\" class=\"small\">-</div></div></div>"
         "<script>"
-        "const pcs={P:'\\u2659',N:'\\u2658',B:'\\u2657',R:'\\u2656',Q:'\\u2655',K:'\\u2654',p:'\\u265f',n:'\\u265e',b:'\\u265d',r:'\\u265c',q:'\\u265b',k:'\\u265a'};"
+        "const pieceMap={P:'wP',N:'wN',B:'wB',R:'wR',Q:'wQ',K:'wK',p:'bP',n:'bN',b:'bB',r:'bR',q:'bQ',k:'bK'};"
         "function el(id){return document.getElementById(id);}function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el(id).classList.add('active');if(id==='configTab')loadConfig();}"
         "function bit(arr,sq){let f=sq.charCodeAt(0)-97,r=sq.charCodeAt(1)-49;return Array.isArray(arr)&&((arr[r]>>f)&1)!==0;}"
         "async function startGame(){await fetch('/api/start',{method:'POST'});update();}async function promote(p){await fetch('/api/promote?p='+p,{method:'POST'});update();}"
         "async function drawAction(action,side){let r=await fetch('/api/draw?action='+action+'&side='+side,{method:'POST'});el('drawInfo').textContent=await r.text();update();}"
         "function virtualSq(s,sq){if(s.orientation==='flipped'){let r=9-parseInt(sq[1]);return sq[0]+r;}return sq;}"
-        "function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8')x+=parseInt(ch);else{if(x===f)return pcs[ch]||'';x++;}}return '';}"
+        "function cellPiece(fen,sq){let rows=fen.split(' ')[0].split('/');let r=8-parseInt(sq[1]),f=sq.charCodeAt(0)-97,x=0;if(!rows[r])return '';for(const ch of rows[r]){if(ch>='1'&&ch<='8')x+=parseInt(ch);else{if(x===f)return ch;x++;}}return '';}function pieceHtml(fen,sq){let ch=cellPiece(fen,sq),asset=pieceMap[ch];return asset?'<img class=\"piece\" src=\"/piece/cburnett/'+asset+'.svg\" alt=\"'+ch+'\">':'';}"
         "function setupLists(s){let missing=[],extra=[];for(let r=1;r<=8;r++){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;if(bit(s.invalid,sq)){if(bit(s.physical,sq))extra.push(sq);else missing.push(sq);}}}return {missing,extra};}"
         "function hasCheck(s){for(let r=1;r<=8;r++){for(let f=0;f<8;f++){if(bit(s.check,String.fromCharCode(97+f)+r))return true;}}return false;}function fmtClock(ms){let t=Math.ceil((ms||0)/1000);let m=Math.floor(t/60);let sec=t%60;return m+':'+String(sec).padStart(2,'0');}"
         "async function loadConfig(){try{let c=await (await fetch('/api/config')).json();el('cfgInfractions').checked=!!c.infractions;el('cfgEmptyEnabled').checked=!!c.empty_enabled;el('cfgStockfishEnabled').checked=!!c.stockfish_enabled;el('cfgStockfishDepth').value=c.stockfish_depth;el('cfgClockMinutes').value=Math.floor((c.clock_initial_seconds||0)/60);el('cfgClockBonus').value=c.clock_bonus_seconds||0;el('cfgBrightness').value=c.brightness;el('brightnessText').textContent=c.brightness+'%';el('cfgEmpty').value=c.empty;el('cfgPiece').value=c.piece;el('cfgLifted').value=c.lifted;el('cfgLegal').value=c.legal;el('cfgBest').value=c.best;el('cfgInvalid').value=c.invalid;el('cfgCheck').value=c.check;el('cfgDraw').value=c.draw;el('configStatus').textContent='Loaded';}catch(e){el('configStatus').textContent='Config API unavailable';}}"
         "async function resetConfig(){let r=await fetch('/api/config?reset=1',{method:'POST'});el('configStatus').textContent=await r.text();await loadConfig();update();}async function saveConfig(){let p=new URLSearchParams();p.set('infractions',el('cfgInfractions').checked?'1':'0');p.set('empty_enabled',el('cfgEmptyEnabled').checked?'1':'0');p.set('stockfish_enabled',el('cfgStockfishEnabled').checked?'1':'0');p.set('stockfish_depth',el('cfgStockfishDepth').value);p.set('clock_initial_seconds',String((parseInt(el('cfgClockMinutes').value,10)||0)*60));p.set('clock_bonus_seconds',el('cfgClockBonus').value);p.set('brightness',el('cfgBrightness').value);p.set('empty',el('cfgEmpty').value.substring(1));p.set('piece',el('cfgPiece').value.substring(1));p.set('lifted',el('cfgLifted').value.substring(1));p.set('legal',el('cfgLegal').value.substring(1));p.set('best',el('cfgBest').value.substring(1));p.set('invalid',el('cfgInvalid').value.substring(1));p.set('check',el('cfgCheck').value.substring(1));p.set('draw',el('cfgDraw').value.substring(1));let r=await fetch('/api/config?'+p.toString(),{method:'POST'});el('configStatus').textContent=await r.text();update();}"
-        "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;d.textContent=isSetup?(phys?'\\u25cf':(inv?sq:'')):cellPiece(s.fen,virtualSq(s,sq));let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('clock').innerHTML='<b>Clock</b><br>White: '+fmtClock(s.white_clock_ms)+'<br>Black: '+fmtClock(s.black_clock_ms)+'<br>Bonus: '+(s.clock_bonus_seconds||0)+'s/move';el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
+        "async function update(){let s=await (await fetch('/api/state')).json();let b=el('board');let isSetup=s.mode==='SETUP';b.innerHTML='';for(let r=8;r>=1;r--){for(let f=0;f<8;f++){let sq=String.fromCharCode(97+f)+r;let phys=bit(s.physical,sq),inv=bit(s.invalid,sq);let c='sq '+(((r+f)%2)?'dark':'light');if(isSetup&&phys&&!inv)c+=' setupok';else if(phys)c+=' phys';if(bit(s.turn,sq))c+=' turn';if(bit(s.legal,sq))c+=' legal';if(bit(s.best,sq))c+=' best';if(inv)c+=' invalid';if(bit(s.check,sq))c+=' check';if(s.selected===sq)c+=' sel';let d=document.createElement('div');d.className=c;if(isSetup){d.textContent=phys?'\\u25cf':(inv?sq:'');}else{d.innerHTML=pieceHtml(s.fen,virtualSq(s,sq));}let cc=document.createElement('span');cc.className='coord';cc.textContent=sq;d.appendChild(cc);b.appendChild(d);}}let lists=setupLists(s);let warn=(isSetup&&lists.missing.length+lists.extra.length>0)?'<div class=\"warn\">Fix red squares, then press Start again.</div>':'';let checkText=(s.state==='CHECK'||s.state==='CHECKMATE')?'<div class=\"statusCheck\">'+s.state+'</div>':'';el('drawInfo').textContent=s.draw_offer?('Draw offered by '+s.draw_offer_by+'. Opponent may accept or reject.'):((s.state==='DRAW'||s.state==='STALEMATE')?('Game result: '+s.state):'No active draw offer.');el('clock').innerHTML='<b>Clock</b><br>White: '+fmtClock(s.white_clock_ms)+'<br>Black: '+fmtClock(s.black_clock_ms)+'<br>Bonus: '+(s.clock_bonus_seconds||0)+'s/move';el('info').innerHTML=checkText+'<b>Mode:</b> '+s.mode+'<br><b>State:</b> '+s.state+'<br><b>Turn:</b> '+s.turn_text+'<br><b>Orientation:</b> '+s.orientation+'<br><b>Selected:</b> '+s.selected+'<br><b>Legal:</b> '+s.legal_text+'<br><b>Best:</b> '+s.best_move;el('captures').innerHTML='<div><b>White side captured</b><br>'+s.white_captured+'<br><b>Points:</b> '+s.white_score+'<br><b>Infractions:</b> '+(s.white_infractions||0)+'/2</div><div><b>Black side captured</b><br>'+s.black_captured+'<br><b>Points:</b> '+s.black_score+'<br><b>Infractions:</b> '+(s.black_infractions||0)+'/2</div>';el('setup').innerHTML=warn+'<b>Missing:</b> '+(lists.missing.join(' ')||'-')+'<br><b>Extra:</b> '+(lists.extra.join(' ')||'-');el('fen').textContent=s.fen;el('pgn').textContent=s.pgn;fetch('/api/stockfish').then(r=>r.text()).then(t=>{el('stockfish').textContent='Stockfish JSON: '+(t||'-');}).catch(()=>{el('stockfish').textContent='Stockfish JSON: unavailable';});}"
         "setInterval(update,500);update();loadConfig();"
         "</script></body></html>";
 

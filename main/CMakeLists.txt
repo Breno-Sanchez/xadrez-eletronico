@@ -24,6 +24,18 @@ idf_component_register(
         "include"
     EMBED_TXTFILES
         "config.yaml"
+        "web/piece/cburnett/wK.svg"
+        "web/piece/cburnett/wQ.svg"
+        "web/piece/cburnett/wR.svg"
+        "web/piece/cburnett/wB.svg"
+        "web/piece/cburnett/wN.svg"
+        "web/piece/cburnett/wP.svg"
+        "web/piece/cburnett/bK.svg"
+        "web/piece/cburnett/bQ.svg"
+        "web/piece/cburnett/bR.svg"
+        "web/piece/cburnett/bB.svg"
+        "web/piece/cburnett/bN.svg"
+        "web/piece/cburnett/bP.svg"
     REQUIRES
         esp_wifi
         esp_event
