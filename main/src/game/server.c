@@ -161,6 +161,7 @@ static void processPendingCommands(void);
 static void stockfishTask(void * parameters);
 static void processStockfishResponses(void);
 static void requestStockfishBestAsync(void);
+static void refreshStockfishAdvisorAfterConfig(uint8_t wasEnabled);
 static void refreshStockfishBestMap(void);
 static void clearStockfishBest(void);
 static bool isStockfishMoveText(const char * text);
@@ -1099,6 +1100,54 @@ static void clearStockfishBest(void)
     (void)memset(bestMap, 0, sizeof(bestMap));
     (void)snprintf(stateBest, sizeof(stateBest), "-----");
 }
+static void clearPendingStockfishQueues(void)
+{
+    stockfish_request_t request;
+    stockfish_response_t response;
+
+    while ((stockfishRequestQueue != NULL) &&
+           (xQueueReceive(stockfishRequestQueue, &request, 0) == pdPASS))
+    {
+    }
+
+    while ((stockfishResponseQueue != NULL) &&
+           (xQueueReceive(stockfishResponseQueue, &response, 0) == pdPASS))
+    {
+    }
+}
+
+static void disableStockfishAdvisorNow(void)
+{
+    stockfishRequestSequence++;
+    clearPendingStockfishQueues();
+    clearStockfishBest();
+    sendLedFrame(0U);
+}
+
+static void refreshStockfishAdvisorAfterConfig(uint8_t wasEnabled)
+{
+    uint8_t isEnabled = runtimeConfigGet()->stockfish_enabled;
+
+    if (isEnabled == 0U)
+    {
+        disableStockfishAdvisorNow();
+        return;
+    }
+
+    if ((wasEnabled == 0U) && (gameMode == GAME_MODE_RUNNING))
+    {
+        clearPendingStockfishQueues();
+        clearStockfishBest();
+        requestStockfishBestAsync();
+        sendLedFrame(0U);
+        return;
+    }
+
+    sendLedFrame(0U);
+}
+
+
+
 
 static void refreshStockfishBestMap(void)
 {
@@ -1149,8 +1198,14 @@ static void requestStockfishBestAsync(void)
 {
     stockfish_request_t request;
 
-    if ((stockfishRequestQueue == NULL) || (gameMode != GAME_MODE_RUNNING) || (runtimeConfigGet()->stockfish_enabled == 0U))
+    if ((stockfishRequestQueue == NULL) || (gameMode != GAME_MODE_RUNNING))
     {
+        return;
+    }
+
+    if (runtimeConfigGet()->stockfish_enabled == 0U)
+    {
+        disableStockfishAdvisorNow();
         return;
     }
 
@@ -1175,6 +1230,13 @@ static void requestStockfishBestAsync(void)
 static void processStockfishResponses(void)
 {
     stockfish_response_t response;
+
+    if (runtimeConfigGet()->stockfish_enabled == 0U)
+    {
+        /* STOCKFISH_DISABLED_DROP_RESPONSES */
+        disableStockfishAdvisorNow();
+        return;
+    }
 
     while ((stockfishResponseQueue != NULL) &&
            (xQueueReceive(stockfishResponseQueue, &response, 0) == pdPASS))
@@ -2255,47 +2317,45 @@ static esp_err_t apiConfigHandler(httpd_req_t * req)
         (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK))
     {
         const runtime_config_t * current = runtimeConfigGet();
+        uint8_t stockfishWasEnabled = current->stockfish_enabled;
 
         if (queryBoolValue(query, "reset", 0U) != 0U)
         {
             (void)runtimeConfigReset();
-            sendLedFrame(0U);
-            cfg = runtimeConfigGet();
         }
         else
         {
+            (void)runtimeConfigSetInvalidPositionInfractions(
+                queryBoolValue(query, "infractions", current->invalid_position_infractions_enabled)
+            );
 
-        (void)runtimeConfigSetInvalidPositionInfractions(
-            queryBoolValue(query, "infractions", current->invalid_position_infractions_enabled)
-        );
+            (void)runtimeConfigSetLedEmptyEnabled(
+                queryBoolValue(query, "empty_enabled", current->led_empty_enabled)
+            );
 
-        (void)runtimeConfigSetLedEmptyEnabled(
-            queryBoolValue(query, "empty_enabled", current->led_empty_enabled)
-        );
+            (void)runtimeConfigSetStockfishEnabled(
+                queryBoolValue(query, "stockfish_enabled", current->stockfish_enabled)
+            );
 
-        (void)runtimeConfigSetStockfishEnabled(
-            queryBoolValue(query, "stockfish_enabled", current->stockfish_enabled)
-        );
+            (void)runtimeConfigSetStockfishDepth(
+                queryUint8Value(query, "stockfish_depth", current->stockfish_depth, 15U)
+            );
 
-        (void)runtimeConfigSetStockfishDepth(
-            queryUint8Value(query, "stockfish_depth", current->stockfish_depth, 15U)
-        );
+            (void)runtimeConfigSetLedBrightness(
+                queryUint8Value(query, "brightness", current->led_brightness_percent, 100U)
+            );
 
-        (void)runtimeConfigSetLedBrightness(
-            queryUint8Value(query, "brightness", current->led_brightness_percent, 100U)
-        );
-
-        applyColorQuery(query, "empty", RUNTIME_LED_COLOR_EMPTY);
-        applyColorQuery(query, "piece", RUNTIME_LED_COLOR_PIECE);
-        applyColorQuery(query, "lifted", RUNTIME_LED_COLOR_LIFTED);
-        applyColorQuery(query, "legal", RUNTIME_LED_COLOR_LEGAL);
-        applyColorQuery(query, "best", RUNTIME_LED_COLOR_BEST);
-        applyColorQuery(query, "invalid", RUNTIME_LED_COLOR_INVALID);
-        applyColorQuery(query, "check", RUNTIME_LED_COLOR_CHECK);
-        applyColorQuery(query, "draw", RUNTIME_LED_COLOR_DRAW);
-
-        sendLedFrame(0U);
+            applyColorQuery(query, "empty", RUNTIME_LED_COLOR_EMPTY);
+            applyColorQuery(query, "piece", RUNTIME_LED_COLOR_PIECE);
+            applyColorQuery(query, "lifted", RUNTIME_LED_COLOR_LIFTED);
+            applyColorQuery(query, "legal", RUNTIME_LED_COLOR_LEGAL);
+            applyColorQuery(query, "best", RUNTIME_LED_COLOR_BEST);
+            applyColorQuery(query, "invalid", RUNTIME_LED_COLOR_INVALID);
+            applyColorQuery(query, "check", RUNTIME_LED_COLOR_CHECK);
+            applyColorQuery(query, "draw", RUNTIME_LED_COLOR_DRAW);
         }
+
+        refreshStockfishAdvisorAfterConfig(stockfishWasEnabled);
     }
 
     cfg = runtimeConfigGet();
@@ -2335,6 +2395,7 @@ static esp_err_t apiConfigHandler(httpd_req_t * req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     return httpd_resp_sendstr(req, response);
 }
+
 
 static esp_err_t apiStockfishHandler(httpd_req_t * req)
 {
